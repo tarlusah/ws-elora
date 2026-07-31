@@ -17,7 +17,8 @@ Baca dulu, urut:
 
 Konteks: kita sedang merancang perubahan besar — offline-first sync + receipt
 scanning pakai LLM. Dibahas satu item backlog per sesi supaya tidak menumpuk.
-Item 1.1 (bentuk domain sync) sudah selesai, hasilnya ada di ADR §2.11.
+Item 1.1 (bentuk domain sync) selesai di ADR §2.11; item 1.2 (sumber
+perubahan sisi pull) selesai di ADR §2.12–§2.13, dan menutup 1.4.
 
 Sekarang bahas item: [ITEM]
 
@@ -30,8 +31,8 @@ Cara kerja yang saya mau:
 - Kalau ada konsekuensi yang belum saya sadari, angkat — walaupun saya
   tidak menanyakannya.
 - Setelah saya setuju, baru tulis ke ADR, update backlog dan PRD kalau
-  kena, lalu commit + push ke branch
-  claude/brainstorm-major-technical-changes-tmb3by (PR #1 sudah ada).
+  kena, lalu commit + push ke branch kerja sesi ini. (PR #1 sudah
+  merged — jangan menumpuk commit di branch itu lagi.)
 
 Catatan:
 - Repo playgrounds/elora-be-go dan playgrounds/elora_spendos TIDAK ada di
@@ -45,12 +46,17 @@ Catatan:
 
 ## Where things stand
 
-**Settled:** 1.1 — sync domain architecture (ADR §2.11)
+**Settled:** 1.1 — sync domain architecture (ADR §2.11) · 1.2 — pull reads entity rows,
+`server_seq` from a per-user in-transaction counter (ADR §2.12–§2.13) · 1.4 — collapsed by
+1.1 + 1.2, nothing left to decide
 
-**Recommended next:** 1.2 — where pull-side changes come from (event + projection vs.
-reading entity rows). Note that 1.1 already answered part of it: `ChangesSince` now belongs
-to each domain, so what remains is how a domain answers that efficiently, and whether a
-changelog earns its keep at all once `server_seq` lives on the row.
+**Recommended next:** 1.5 — push semantics. It is the last 🔴 in Track 1 and the last piece of
+Track 1 that is **wire-visible and therefore locked at launch**; 1.3 and 1.6 are now small and
+mostly mechanical, and 1.7/1.8 are narrowed. Two questions carry it: what `conflict` even means
+on a single-device product where the server adjudicates by ingest order (if nothing, the status
+should be dropped from the contract before it ships, not after), and whether a batch is atomic
+or per-record — ADR §2.11 put transaction granularity in the domain's hands via `ApplyBatch`,
+so this decides what the *aggregate* result means when one kind partially fails.
 
 **Quick wins available any time** — manager decisions, no design discussion needed:
 2.1 refresh-token TTL · 3.4 monthly scan cap · 3.6 model tier

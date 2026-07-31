@@ -13,6 +13,10 @@ Architecture rules in play: `.claude/skills/backend/*.md`.
 **Sync direction, settled with 1.1:** two-way = account, budget, transaction. Pull-only =
 category, user profile. Creating/editing/hiding a category requires connectivity.
 
+**Pull source, settled with 1.2:** domains answer `ChangesSince` from their own entity rows.
+`server_seq` is authoritative on the row and comes from a per-user counter incremented inside
+the write transaction. No changelog table, no event/projection feed for sync.
+
 ---
 
 ## Track 1 — Sync core (backend)
@@ -23,11 +27,11 @@ Blocking. Everything in Track 4 waits on this, and the API contract can't be wri
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
 | 1.1 | ~~**Shape of the new `sync` domain**~~ | **☑ Settled → ADR §2.11.** Thin orchestrator; both directions via domain usecases; opt-in `SyncPushable`/`SyncPullable`; value types in `pkg/synccontract`; envelope carries sync metadata, payload = existing domain DTO; `ApplyBatch` not per-record; no entity/repository; conformance suite required. | 🔴 | ☑ |
-| 1.2 | **Where changes come from** | Event + projection (idiomatic, but in-memory bus isn't durable) vs. reading entity rows directly. Ties to whether `server_seq` is authoritative on the row. | 🔴 | ☐ |
-| 1.3 | **`server_seq`: assignment point + generator** | Must it live in the repository layer so non-sync write paths also get a sequence? Global Postgres sequence vs per-user counter. | 🟡 | ☐ |
-| 1.4 | **Read model for `GET /sync/changes`** | `UNION ALL` view over 5 tables vs a changelog table. Determines pagination and indexing. | 🟡 | ☐ |
+| 1.2 | ~~**Where changes come from**~~ | **☑ Settled → ADR §2.12 + §2.13.** `ChangesSince` reads the domain's own entity rows; `server_seq` authoritative on the row. No changelog, no event/projection feed — it would either give `sync` a cross-domain table (contradicting 1.1) or fragment into 5 duplicate tables. `server_seq` from a per-user counter incremented **inside the write transaction**; global Postgres sequence rejected (commit-order gap silently skips records). Reversible: the wire envelope is identical either way. | 🔴 | ☑ |
+| 1.3 | **`server_seq`: assignment point** | *Generator decided by 1.2: per-user counter, in-transaction.* What remains: where in the repository layer the assignment happens so no non-sync write path can bypass it. | 🟡 | ☐ |
+| 1.4 | ~~**Read model for `GET /sync/changes`**~~ | **☑ Collapsed by 1.1 + 1.2.** Both candidates were cross-domain constructs already excluded — a `UNION ALL` view over 5 domain tables *is* sync reading other domains' tables. What's left is not a discussion: index `(user_id, server_seq)` per table; pagination per ADR §2.11 (merge-sort, single `int64` cursor). | 🟡 | ☑ |
 | 1.5 | **Push semantics** | Per-record `applied` / `conflict` / `rejected`. What even counts as a conflict on a single-device product? Is the whole batch atomic or per-record? | 🔴 | ☐ |
-| 1.6 | **Soft-delete enforcement** | `deleted_at IS NULL` touches every read in 4 domains. Shared helper, base repo, or discipline? One miss = deleted records resurrect. | 🟡 | ☐ |
+| 1.6 | **Soft-delete enforcement** | `deleted_at IS NULL` touches every read in 4 domains. Shared helper, base repo, or discipline? **Raised to 🔴 by 1.2** — the code is simple, the consequence is not: pull reads live rows, so one hard delete anywhere is a permanent zombie record on the client, with no error on either side (ADR §2.13). | 🔴 | ☐ |
 | 1.7 | **Client-generated UUIDv7** | Who validates the format? What happens on collision, or an ID already owned by another user? *Narrowed by 1.1: applies only to pushable units — categories keep server-generated IDs.* | 🟡 | ☐ |
 | 1.8 | **Fate of existing per-domain CRUD endpoints** | Keep them (future web client) or route everything through sync? *Constrained by 1.1: if kept they share the same DTO and must accept a client-supplied ID — two ID policies would be worse than either.* | 🟡 | ☐ |
 
@@ -93,3 +97,10 @@ behind the status docs).
 - [ ] Is `is_default` currently a per-account flag (moving it to `user.default_account_id`)?
 - [ ] What does `lib/core/sync/` actually implement today?
 - [ ] Is the `event/` + `projection/` mechanism used by any domain yet, or purely aspirational?
+      *No longer blocks 1.2 — sync does not use it either way — but still worth knowing.*
+- [ ] **Is per-user category hide/show stored in a table separate from the category definition?**
+      If so, that table's writes must bump the category row's `server_seq` (ADR §2.12), or hiding
+      a category never reaches the device.
+- [ ] **Which write paths hard-delete today** across `transactions`, `accounts`, `categories`,
+      `budgets` — including migrations, cleanup jobs, and cascading FKs? Each is a zombie-record
+      source under ADR §2.13.
