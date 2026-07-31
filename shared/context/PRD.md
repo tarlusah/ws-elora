@@ -101,6 +101,12 @@ budget-aware variants → Profile sub-screens (edit profile, preferences).
 
 ## 4. Open architectural decision: Sync — read this before any big change touching data sync
 
+> **✅ RESOLVED 2026-07-31.** This fork is closed by
+> `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`: login-required, single-device,
+> bidirectional cursor delta sync with soft delete and server-assigned sequencing. The section
+> below is retained as the historical framing of the problem — read the ADR for the decision,
+> and `shared/context/PRD-offline-first-and-receipt-scan.md` for what to build.
+
 This is the single most consequential open fork in the whole project, and it spans **both**
 repos:
 
@@ -163,6 +169,11 @@ and can be skipped.
 ---
 
 ## 6. Before making large changes
+
+> **Current cycle:** the offline-first sync rewrite + LLM receipt scanning are specified in
+> `shared/context/PRD-offline-first-and-receipt-scan.md` (decision record:
+> `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`). This file remains the baseline
+> you are changing *from*; that PRD defines the change itself.
 
 1. Resolve the sync-architecture fork (§4) first if the change touches sync/offline/multi-device
    at all — it's the one place both surfaces already diverged from spec independently.
