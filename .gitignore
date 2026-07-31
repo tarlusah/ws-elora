@@ -1,0 +1,5 @@
+# playgrounds/* are local symlinks to the real project repos
+# (/home/tarlusah/Projects/elora/elora-be-go, elora_spendos) — each has its
+# own git history. They're machine-local convenience links, not part of
+# this workspace's tracked content.
+/playgrounds/

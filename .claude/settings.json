@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "allow": [
+      "Edit(playgrounds/elora-be-go/**)",
+      "Write(playgrounds/elora-be-go/**)",
+      "Edit(playgrounds/elora_spendos/**)",
+      "Write(playgrounds/elora_spendos/**)",
+      "Edit(notes/**)",
+      "Write(notes/**)",
+      "Edit(reports/**)",
+      "Write(reports/**)",
+      "Edit(shared/context/task-status.json)",
+      "Write(shared/context/task-status.json)",
+      "Bash(go:*)",
+      "Bash(gofmt:*)",
+      "Bash(dart:*)",
+      "Bash(flutter:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(git:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)"
+    ]
+  }
+}

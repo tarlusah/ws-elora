@@ -1,0 +1,126 @@
+{
+  "project": "elora",
+  "updated_at": "2026-07-31T00:00:00Z",
+  "current_phase": "planning",
+  "legend": {
+    "status": [
+      "todo",
+      "in-progress",
+      "blocked",
+      "done"
+    ]
+  },
+  "note": "This tracks the NEXT feature/change cycle through this workspace, not the overall project history. playgrounds/elora-be-go and playgrounds/elora_spendos already have substantial existing code — see their own CLAUDE.md 'Status & Progress' sections and docs/progress/ for history. Reset every field here to 'todo' at the start of each new cycle.",
+  "phases": [
+    {
+      "id": "planning",
+      "owner": "@pm",
+      "status": "todo",
+      "consumes": [],
+      "produces": "shared/context/PRD.md, shared/context/user-stories.md",
+      "depends_on": [],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "design",
+      "owner": "@architect",
+      "status": "todo",
+      "consumes": [
+        "shared/context/PRD.md",
+        "shared/context/user-stories.md",
+        "playgrounds/elora-be-go/api-documentation/*.yaml"
+      ],
+      "produces": "playgrounds/elora-be-go/api-documentation/*.yaml (+ mirrored copy, + data model)",
+      "depends_on": [
+        "planning"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "build-backend",
+      "owner": "@backend",
+      "status": "todo",
+      "consumes": [
+        "shared/context/PRD.md",
+        "playgrounds/elora-be-go/api-documentation/*.yaml"
+      ],
+      "produces": "playgrounds/elora-be-go",
+      "depends_on": [
+        "design"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "build-frontend",
+      "owner": "@frontend",
+      "status": "todo",
+      "consumes": [
+        "shared/context/PRD.md",
+        "playgrounds/elora-be-go/api-documentation/*.yaml",
+        "playgrounds/elora_spendos/design-system/"
+      ],
+      "produces": "playgrounds/elora_spendos",
+      "depends_on": [
+        "design"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "testing",
+      "owner": "@qa",
+      "status": "todo",
+      "consumes": [
+        "shared/context/PRD.md",
+        "playgrounds/elora-be-go",
+        "playgrounds/elora_spendos"
+      ],
+      "produces": "shared/context/test-report.md",
+      "depends_on": [
+        "build-backend",
+        "build-frontend"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "review",
+      "owner": "manager",
+      "status": "todo",
+      "consumes": [
+        "everything"
+      ],
+      "produces": "approve / reject",
+      "depends_on": [
+        "testing"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    },
+    {
+      "id": "deploy",
+      "owner": "@devops",
+      "status": "todo",
+      "consumes": [
+        "playgrounds/elora-be-go",
+        "playgrounds/elora-be-go/api-documentation/*.yaml"
+      ],
+      "produces": "live backend on the VPS (URL/IP recorded) + infra/CI configs",
+      "depends_on": [
+        "testing"
+      ],
+      "started_at": null,
+      "completed_at": null,
+      "notes": ""
+    }
+  ]
+}
