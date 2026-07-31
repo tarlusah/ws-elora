@@ -72,9 +72,14 @@ There is **no production data and no backward-compatibility requirement**, so br
 | `protocol_version` | On every sync request and response; too-old clients rejected explicitly |
 | Pagination | `limit` / `next_cursor` / `has_more` mandatory — no unbounded responses |
 | Schema: 4 domains | `transactions`, `accounts`, `categories`, `budgets` gain `deleted_at` and `server_seq`; `id` becomes client-supplied UUIDv7 |
-| Soft delete | Hard DELETE replaced by tombstones across all four domains |
-| Ingest sequencing | Server assigns monotonic `server_seq` per user; device clocks never trusted |
-| Push validation | Server re-validates every record; returns `applied` / `conflict` / `rejected` per record |
+| Soft delete | Hard DELETE replaced by tombstones across all four domains. **No remaining hard-delete path** — pull reads live rows, so one hard delete is a permanent zombie record on the client (ADR §2.13) |
+| Ingest sequencing | Server assigns monotonic `server_seq` per user, from a **per-user counter incremented inside the write transaction** (not a global Postgres sequence — commit-order gaps silently skip records). Device clocks never trusted. See ADR §2.12 |
+| Pull read model | Each domain answers `ChangesSince` from **its own entity rows** — `WHERE user_id = ? AND server_seq > ? ORDER BY server_seq LIMIT n`, index `(user_id, server_seq)`. No changelog table, no event/projection feed. See ADR §2.12 |
+| Push validation | Server re-validates every record; returns `applied` / `conflict` / `rejected` per record. **`conflict` means the write was applied** — it flags that the client's write stood on a stale version, detected via `base_seq`. See ADR §2.14 |
+| Batch granularity | **Per record.** One rejected record never blocks the rest of a device's backlog. A domain may group records that must land together (split parent + children) |
+| Sticky tombstones | An update may never clear `deleted_at`. Undelete is an explicit separate action, never a side effect of a stale edit arriving late |
+| Budget natural key | Unique `(user_id, category_id, period)`. Two devices creating the same category-month is invisible to LWW — the `id`s differ — so the constraint is what prevents a duplicate slot |
+| Sync log + `ingested_at` | Operational only, never read by the pull path: who synced, when, from what cursor, push counts by status; plus a human-readable ingest timestamp per row |
 | Sync domain rewrite | Thin orchestrator over consumer-defined `SyncPushable` / `SyncPullable`; shared value types in `pkg/synccontract`; no entity, no repository. See ADR §2.11 |
 | Conformance test suite | `pkg/synccontract/testing` — every domain implementation must pass it |
 | `default_account_id` on user | Replaces the per-account `is_default` flag (avoids a two-record atomic update) |
@@ -87,7 +92,8 @@ There is **no production data and no backward-compatibility requirement**, so br
 |---|---|
 | Rewrite `lib/core/sync/` | Replace, do not refactor. Cursor delta sync with `last_synced_seq` |
 | Client-generated IDs | UUIDv7 at record creation |
-| Dirty tracking | `sync_state`: `clean` / `dirty` / `rejected` |
+| Dirty tracking | `sync_state`: `clean` / `dirty` / `rejected`. Each row also keeps the `server_seq` it was last known at, pushed back as `base_seq` |
+| Conflict surfacing | A `conflict` result means the write landed but overwrote a newer one. Shown in the same needs-attention surface as rejected records — no merge UI |
 | Retry with backoff | Exponential, max 3 attempts, debounced — specified in TASK-FE-01 but never implemented |
 | Sync status UI | `syncing` / `synced` / `failed` — specified but never implemented |
 | Rejected-record UI | **New surface.** Visible, explains why, lets the user fix and re-push |
@@ -199,7 +205,18 @@ Sync:
 - [ ] Logging in as a different user on the same device does not mix data.
 - [ ] Explicit logout warns when unsynced records exist.
 - [ ] A server-rejected record is visible, explained, and resolvable in the UI.
+- [ ] A record pushed on top of a version newer than the device held is applied and reported as
+      `conflict`, and the user is told — it is not silently overwritten and not lost.
+- [ ] One rejected record in a batch does not stop the other records in that batch from applying.
+- [ ] A record deleted on one device is not resurrected by a stale edit pushed afterwards.
+- [ ] Two devices creating a budget for the same category and month produce one budget, not two.
 - [ ] Deleting a record on one device does not resurrect it after sync.
+- [ ] Concurrent writes to the same user never cause a pull to skip a record — a client that
+      paginates while writes are landing ends up with every change.
+- [ ] No write path on the four synced tables hard-deletes: not the API, not a cleanup job, not
+      a cascading foreign key.
+- [ ] A change made through a non-sync path (the REST CRUD endpoints, if retained) is picked up
+      by the next pull — `server_seq` is bumped there too.
 - [ ] Offline, the user can categorise transactions using existing categories; attempting to
       create or hide a category shows a clear "needs connection" state rather than failing.
 - [ ] Every domain implementing `SyncPushable` / `SyncPullable` passes the shared conformance
