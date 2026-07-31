@@ -75,8 +75,8 @@ There is **no production data and no backward-compatibility requirement**, so br
 | Soft delete | Hard DELETE replaced by tombstones across all four domains |
 | Ingest sequencing | Server assigns monotonic `server_seq` per user; device clocks never trusted |
 | Push validation | Server re-validates every record; returns `applied` / `conflict` / `rejected` per record |
-| `user_category_state` | Hide/show state split from system-category definitions |
-| Deterministic "Uncategorized" ID | Derived from `user_id` so client and server cannot diverge |
+| Sync domain rewrite | Thin orchestrator over consumer-defined `SyncPushable` / `SyncPullable`; shared value types in `pkg/synccontract`; no entity, no repository. See ADR §2.11 |
+| Conformance test suite | `pkg/synccontract/testing` — every domain implementation must pass it |
 | `default_account_id` on user | Replaces the per-account `is_default` flag (avoids a two-record atomic update) |
 | `/me` endpoint | Completes the Profile placeholders noted in the baseline PRD |
 | Auth | Refresh-token grace window during rotation; session eviction must not look like a clean install |
@@ -108,9 +108,9 @@ a category also created offline must not fail its foreign key.
 
 ### 4.5 What syncs
 
-Two-way: transactions (incl. `000` placeholders, review state, splits), accounts, user
-categories, category user-state, budgets.
-Server → device only: system category definitions, user profile.
+Two-way: transactions (incl. `000` placeholders, review state, splits), accounts, budgets.
+Server → device only: categories (all of them — creating, editing, and hiding a category
+requires connectivity), user profile.
 Not synced: dashboard aggregates (computed locally), sessions/tokens, UI preferences,
 sync bookkeeping, **receipt images**.
 
@@ -200,7 +200,10 @@ Sync:
 - [ ] Explicit logout warns when unsynced records exist.
 - [ ] A server-rejected record is visible, explained, and resolvable in the UI.
 - [ ] Deleting a record on one device does not resurrect it after sync.
-- [ ] Exactly one "Uncategorized" category exists per user after any sync sequence.
+- [ ] Offline, the user can categorise transactions using existing categories; attempting to
+      create or hide a category shows a clear "needs connection" state rather than failing.
+- [ ] Every domain implementing `SyncPushable` / `SyncPullable` passes the shared conformance
+      test suite.
 - [ ] A client sending an unsupported `protocol_version` receives an explicit error.
 - [ ] Budget/History/Review/Dashboard/Profile go through a repository layer.
 

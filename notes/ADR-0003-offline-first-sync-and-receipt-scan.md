@@ -96,6 +96,11 @@ Drift:
 
 Client-side additionally: `sync_state` (`clean` / `dirty` / `rejected`).
 
+**`id` is client-generated only for push-capable units** (accounts, budgets, transactions).
+Categories are pull-only (§2.6), so their IDs remain server-generated. They still carry
+`server_seq` and `deleted_at` — the client needs both to advance its cursor and to learn about
+server-side deletions.
+
 **DELETE becomes soft delete.** This is breaking and is accepted — no production data exists.
 
 Because there is no data to preserve, Drift requires **no migration steps**: bump the schema
@@ -109,9 +114,7 @@ Test applied: *would the user be upset to lose this if their phone died?*
 |---|---|---|
 | Transactions | ↕ two-way | Core product data. Includes `000` placeholders, review state, splits. |
 | Accounts | ↕ two-way | Small, required offline by Capture. |
-| Categories — user-created | ↕ two-way | Must be creatable offline. |
-| Categories — system/seeded | ⬇ server → device | Definition is server-owned; client never creates or edits. |
-| Category user-state (hide/show) | ↕ two-way | This is *user* state, not category definition. See §2.7. |
+| Categories — all of them | ⬇ server → device | Server-owned entirely. Creating, editing, and hiding a category require connectivity. See §2.7. |
 | Budgets | ↕ two-way | Small; per category per month. LWW is safe. |
 | User profile (`/me`) | ⬇ server → device | Profile edits require connectivity. See §2.8. |
 | Dashboard aggregates | ✗ not synced | Computed locally from Drift (already the case). |
@@ -125,18 +128,28 @@ over 5 years ≈ 18,000 rows ≈ 4–5 MB; accounts, categories, and budgets are
 of rows each. Windowing would add range-aware tombstones, incomplete offline History search,
 and hydrate-on-scroll UX for a problem the product does not have.
 
-### 2.7 Categories are two kinds of data
+### 2.7 Categories are pull-only
 
-A system category has a **definition** (server-owned, identical for every user) and a
-**user state** (hidden or not, owned by this user). Treating them as one two-way record
-causes the client to believe it may write the definition, producing duplicates at sync.
+Categories sync **downward only**. The client never creates, edits, hides, or deletes a
+category while offline — it uses whatever categories it already has. This follows the owner's
+principle: *if there's no internet, use what's there.*
 
-Decision: definitions arrive on hydration; user state syncs as a separate record
-(`user_category_state`) keyed by `(user_id, category_id)`.
+Consequences, all simplifications:
 
-The auto-seeded per-user protected **"Uncategorized"** category must have a **deterministic
-ID derived from `user_id`**, so client and server independently produce the same ID and no
-duplicate can exist.
+- No client-generated UUID for categories.
+- No push path, no tombstone authoring, no conflict handling on the category domain.
+- The separate `user_category_state` record proposed in earlier drafts is **not needed** —
+  hide/show is a server-side write like any other category mutation.
+- The auto-seeded per-user **"Uncategorized"** category needs **no deterministic ID**. That
+  requirement only existed to stop client and server from seeding it independently; the client
+  never seeds. Existing server-side seeding on register is unchanged.
+
+**Accepted cost:** hiding or creating a category requires connectivity. Adding a push path to
+the category domain for a single boolean would mean tombstones, conflict handling, and
+conformance tests for an action a user performs perhaps once a year. The trade is not worth it.
+
+Category definition and per-user state may still be stored separately server-side if the schema
+already does so — that is now an internal detail, not a sync concern.
 
 ### 2.8 Server stays authoritative at ingest
 
@@ -198,6 +211,156 @@ Profile — the five features that currently call Drift directly, in violation o
 `Repository → Provider → Screen` pattern in `.claude/skills/frontend/coding-style.md`.
 
 Decision: **fold the repository-layer cleanup into this work.** It will not happen otherwise.
+
+### 2.11 Sync domain architecture (backend)
+
+*Settled in discussion item 1.1. Governs how §2.3–§2.6 are implemented inside
+`elora-be-go`, under the rules in `.claude/skills/backend/coding-style.md`.*
+
+**Push and pull are asymmetric.** Push carries business rules — the server is authoritative at
+ingest (§2.8), so it must go through domain usecases or validation gets duplicated. Pull has no
+business rules; it is pure projection of state. This asymmetry allowed a shortcut (sync reading
+other domains' tables for pull) that is nevertheless **rejected**: the whole codebase is written
+so domains can later be extracted into services, and a sync component that reaches across domain
+tables would break that extraction. Consistency with the existing investment wins.
+
+**Decision: `sync` is a thin orchestrator. Both directions go through domain usecases.**
+
+#### Opt-in, per direction
+
+Not every domain syncs, and not every syncing domain syncs both ways. Two consumer-defined
+interfaces; a domain implements whichever apply:
+
+```go
+// internal/sync/usecase/ports.go
+type SyncPushable interface {
+    Kind() string
+    ApplyBatch(ctx context.Context, changes []synccontract.Change) []synccontract.Result
+}
+
+type SyncPullable interface {
+    Kind() string
+    ChangesSince(ctx context.Context, userID string, seq int64, limit int) ([]synccontract.Change, error)
+}
+```
+
+| Unit | Pushable | Pullable |
+|---|:--:|:--:|
+| account | ✓ | ✓ |
+| budget | ✓ | ✓ |
+| transaction | ✓ | ✓ |
+| category | — | ✓ |
+| user profile | — | ✓ |
+
+Two of five units are pull-only, which is what earns the split: a merged interface would force
+`category` and `user` to implement `ApplyBatch` as a no-op — code that exists only to satisfy
+the compiler and fails at runtime if ever called. Split, a pull-only domain has no push door at
+all. Registration in `apps/` then doubles as documentation:
+
+```go
+syncUsecase := sync.NewUsecase(
+    sync.WithPushable(accountUC, budgetUC, txUC),
+    sync.WithPullable(accountUC, budgetUC, txUC, categoryUC, userUC),
+)
+```
+
+#### Shared value types live in `pkg/`, not `internal/sync/`
+
+Go satisfies interfaces implicitly, so a domain never imports the *interface*. But it must
+import the *parameter and return types*. If `Change` and `Result` lived in
+`internal/sync/usecase`, then `internal/transaction/usecase` would import another domain —
+violating the first rule of the architecture.
+
+They therefore live in **`pkg/synccontract/`**: shared by all domains, no business logic, and
+`pkg/` may never import `internal/`. ✓
+
+#### Envelope carries sync metadata; payload is the domain's existing DTO
+
+```go
+// pkg/synccontract/
+type Change struct {
+    Kind      string          // ← sync metadata
+    ID        string          // ← sync metadata
+    DeletedAt *time.Time      // ← sync metadata
+    ServerSeq int64           // ← sync metadata
+    Payload   json.RawMessage // ← exactly the domain's existing DTO, unchanged
+}
+
+type Result struct {
+    ID        string
+    Status    string // applied | rejected
+    Reason    string
+    ServerSeq int64
+}
+```
+
+This is what lets sync stay generic. Sync orders and paginates by `server_seq` and reports
+results by `id` **without knowing whether it holds a transaction or a budget**. Had those fields
+lived inside the payload, sync would have to either import concrete domain types (rule
+violation) or unmarshal the payload to find them — which re-creates the envelope implicitly.
+
+The second consequence matters as much: because sync metadata is not in the payload, **there is
+exactly one representation of each entity**. The payload is the same DTO the REST endpoint uses.
+Adding a field to a transaction means adding it once, and both the online and offline paths pick
+it up. Two separate DTOs would silently drop new fields on the sync path only — the path
+developers exercise least, on a failure mode that produces no error and is unreproducible for
+anyone with a working connection.
+
+A flat wire format (metadata merged into the payload, sync unmarshalling twice) also works.
+The envelope was preferred because it can be described once in OpenAPI while the payload varies
+per kind, and because it makes the "every payload carries id and seq" contract structural rather
+than conventional.
+
+Follow-on: **`id` is supplied by the client on every write path**, so the CRUD endpoints (if
+retained — see item 1.8) must accept a client-supplied ID rather than generating one. Two ID
+policies in one system would be worse than either.
+
+#### `ApplyBatch`, not per-record `Apply`
+
+Sync enforces ordering *between* kinds (`accounts → categories → budgets → transactions`, and
+it must **not** trust the client's ordering). But ordering also matters *within* a kind: a split
+transaction's parent must land before its child; a parent category before its child. Deciding
+that requires knowing about parent references — domain knowledge sync must not have.
+
+So a domain receives its whole slice at once and orders it internally. This also puts
+transaction granularity in the domain's hands rather than sync's, which loosens the coupling to
+item 1.5.
+
+#### `sync` has no entity and no repository
+
+`server_seq` lives on each domain's own rows; the cursor lives on the client; idempotency reuses
+the existing per-domain pattern. The server needs to remember nothing about sync, so the domain
+is **stateless** — the same shape as `dashboard`, which is aggregation-only with no entity.
+
+#### Where the adapters live
+
+Each domain needs a small amount of code to unmarshal `Payload` into its own type and call its
+own usecase. This goes in an additional file under the domain's existing `usecase/` folder
+(`{domain}_sync.go`). No change to the house folder structure.
+
+#### Sync is not anemic
+
+Its own logic: ordering enforcement between kinds, dispatch by kind, cursor and pagination
+semantics, `protocol_version` negotiation, merge-sort across pull streams, and result
+aggregation.
+
+The merge-sort is cheap because the sequence is global and therefore a total order: query each
+pullable unit with `WHERE user_id = ? AND server_seq > cursor ORDER BY server_seq LIMIT n`,
+merge, take the top `n`. **The cursor stays a single `int64`** — no compound cursor. The cost is
+over-fetching (`n` per unit to return `n` overall), which is immaterial at this data volume.
+
+#### Correctness is enforced by tests, not discipline
+
+Opt-in per domain means the mechanical parts — tombstones, `server_seq` assignment,
+`deleted_at` filtering — are written once per pushable unit rather than once overall. That is
+the honest cost of this design versus a centralised sync repository: more places to get the same
+thing subtly wrong, on a failure mode that loses user data.
+
+Mitigations, both required:
+
+1. Mechanical helpers in `pkg/` so each domain writes only what is genuinely domain-specific.
+2. **A conformance test suite in `pkg/synccontract/testing` that every implementation must
+   pass.** This is the only thing that keeps four implementations behaving identically.
 
 ---
 

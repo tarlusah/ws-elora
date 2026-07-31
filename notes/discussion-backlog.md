@@ -10,6 +10,9 @@ Context already settled: `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`
 `shared/context/PRD-offline-first-and-receipt-scan.md`.
 Architecture rules in play: `.claude/skills/backend/*.md`.
 
+**Sync direction, settled with 1.1:** two-way = account, budget, transaction. Pull-only =
+category, user profile. Creating/editing/hiding a category requires connectivity.
+
 ---
 
 ## Track 1 — Sync core (backend)
@@ -19,14 +22,14 @@ Blocking. Everything in Track 4 waits on this, and the API contract can't be wri
 
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
-| 1.1 | **Shape of the new `sync` domain** | Is `sync` an orchestrator or still a peer domain? Which interfaces does it define (consumer-defined, per house rule)? How do the 4 domains satisfy them? **Start here — 1.2–1.5 all flow from it.** | 🔴 | ☐ |
+| 1.1 | ~~**Shape of the new `sync` domain**~~ | **☑ Settled → ADR §2.11.** Thin orchestrator; both directions via domain usecases; opt-in `SyncPushable`/`SyncPullable`; value types in `pkg/synccontract`; envelope carries sync metadata, payload = existing domain DTO; `ApplyBatch` not per-record; no entity/repository; conformance suite required. | 🔴 | ☑ |
 | 1.2 | **Where changes come from** | Event + projection (idiomatic, but in-memory bus isn't durable) vs. reading entity rows directly. Ties to whether `server_seq` is authoritative on the row. | 🔴 | ☐ |
 | 1.3 | **`server_seq`: assignment point + generator** | Must it live in the repository layer so non-sync write paths also get a sequence? Global Postgres sequence vs per-user counter. | 🟡 | ☐ |
 | 1.4 | **Read model for `GET /sync/changes`** | `UNION ALL` view over 5 tables vs a changelog table. Determines pagination and indexing. | 🟡 | ☐ |
 | 1.5 | **Push semantics** | Per-record `applied` / `conflict` / `rejected`. What even counts as a conflict on a single-device product? Is the whole batch atomic or per-record? | 🔴 | ☐ |
 | 1.6 | **Soft-delete enforcement** | `deleted_at IS NULL` touches every read in 4 domains. Shared helper, base repo, or discipline? One miss = deleted records resurrect. | 🟡 | ☐ |
-| 1.7 | **Client-generated UUIDv7** | Who validates the format? What happens on ID collision or an ID that already belongs to another user? | 🟡 | ☐ |
-| 1.8 | **Fate of existing per-domain CRUD endpoints** | Keep them (future web client) or route everything through sync? If kept, they're a second write path that must also assign `server_seq`. | 🟡 | ☐ |
+| 1.7 | **Client-generated UUIDv7** | Who validates the format? What happens on collision, or an ID already owned by another user? *Narrowed by 1.1: applies only to pushable units — categories keep server-generated IDs.* | 🟡 | ☐ |
+| 1.8 | **Fate of existing per-domain CRUD endpoints** | Keep them (future web client) or route everything through sync? *Constrained by 1.1: if kept they share the same DTO and must accept a client-supplied ID — two ID policies would be worse than either.* | 🟡 | ☐ |
 
 ## Track 2 — Auth & the offline window
 
