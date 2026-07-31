@@ -16,7 +16,7 @@ Three pieces of bookkeeping, and nothing else.
 | Every synced row, both sides | `id` (client UUIDv7), `updated_at`, `deleted_at`, `server_seq` | Identity, tombstone, position |
 | Server, one row per user | `user_sync_state.last_seq` | The sequence generator |
 | Client, one value | `last_synced_seq` | The cursor — how far this device has seen |
-| Client, per row | `sync_state`: `clean` / `dirty` / `rejected` | What still needs pushing |
+| Client, per row | `sync_state`: `clean` / `dirty` / `flagged` / `rejected`, plus the `server_seq` this row was last known at | What still needs pushing, and what version it was edited from |
 
 The whole protocol follows from one rule:
 
@@ -73,16 +73,17 @@ sequenceDiagram
     participant T as transaction usecase
     participant P as PostgreSQL
 
-    C->>S: POST /sync/changes<br/>protocol_version + changes[]
+    C->>S: POST /sync/changes<br/>protocol_version + changes[] with base_seq
     S->>S: Reject unsupported protocol_version
     S->>S: Group by Kind and order the kinds<br/>account → budget → transaction<br/>client ordering is NOT trusted
 
     S->>A: ApplyBatch(changes of kind "account")
     A->>A: Validate — server is authoritative
+    A->>A: row.server_seq > base_seq ?<br/>→ stale write, mark conflict
     A->>P: UPDATE user_sync_state<br/>SET last_seq = last_seq + 1 RETURNING
-    A->>P: UPSERT row with new server_seq
+    A->>P: UPSERT row with new server_seq<br/>deleted_at is never cleared
     Note over A,P: Both statements in ONE transaction
-    A-->>S: Result[] — applied / rejected
+    A-->>S: Result[] — applied / conflict / rejected<br/>per record, one failure does not stop the rest
 
     S->>B: ApplyBatch(kind "budget")
     B-->>S: Result[]
@@ -94,9 +95,18 @@ sequenceDiagram
     S-->>C: results[] keyed by id, each with status + server_seq
 ```
 
-**OPEN (item 1.5):** what happens when one record inside a batch is rejected — whole batch
-rolled back, or the rest still applied — and whether `conflict` means anything at all on a
-single-device product. The diagram shows only `applied` / `rejected`.
+**Why `base_seq` is here (ADR §2.14).** §2.9 requires push before pull, so the pushing device is
+pushing *blind* — it has not yet learned what changed on the server. It does know which version
+it edited, so it sends that. The server holds both halves and makes the comparison the device
+could not: `row.server_seq > base_seq` means the write stood on a stale version.
+
+Three statuses, and the middle one is the one most likely to be implemented wrongly:
+
+| Status | Written? | Meaning |
+|---|:--:|---|
+| `applied` | yes | `base_seq` matched, or the server had never seen this `id` |
+| `conflict` | **yes** | Applied under LWW, but it overwrote something newer. Surface it to the user |
+| `rejected` | no | A rule or constraint failed. Stays `rejected` on the device |
 
 ---
 
@@ -181,13 +191,16 @@ stateDiagram-v2
 
     clean --> dirty: edited or deleted offline
     dirty --> clean: push returned applied
-    dirty --> rejected: push returned rejected
+    dirty --> flagged: push returned conflict — the write DID land
+    flagged --> clean: user acknowledges it overwrote something newer
+    dirty --> rejected: push returned rejected — the write did not land
     rejected --> dirty: user fixes it in the needs-attention screen
     clean --> clean: pulled again — UPSERT is idempotent
 
     note right of rejected
-        A new UI surface.
-        The record is never discarded
+        One needs-attention surface
+        serves both flagged and rejected.
+        A record is never discarded
         and never silently dropped.
     end note
 ```
@@ -220,15 +233,35 @@ install.
 
 ---
 
-## 8. Note on ADR §2.4
+## 8. Push and apply use different orders
 
-§2.4 states the required order as
-`accounts → categories (parent before child) → budgets → transactions`
-and applies it to both push and hydration. Since §2.7 made categories pull-only, categories
-cannot appear on the push path at all. The two orders are different:
+Foreign keys must resolve at ingest, but the two directions do not carry the same kinds —
+categories are pull-only (§2.7), so they cannot appear on the push path at all.
 
-- **Push (client → server):** accounts → budgets → transactions
-- **Apply on pull (server → client):** accounts → categories → budgets → transactions
+- **Push (client → server):** accounts → budgets → transactions (parent before split child)
+- **Apply on pull (server → client):** accounts → categories (parent before child) → budgets → transactions
 
-The diagrams above follow that split. §2.4 should be reworded to match — flagged, not yet
-changed.
+ADR §2.4 originally gave one list for both; it has been corrected to match.
+
+---
+
+## 9. What the server decides, per record
+
+Each record is decided on its own. One `rejected` never stops the rest of the batch — a device
+pushing three days of offline work cannot be blocked by a single record the server refuses.
+
+```mermaid
+flowchart TD
+    R["Record arrives in ApplyBatch"] --> V{"Business rules and<br/>constraints pass?"}
+    V -->|No| REJ["rejected<br/>not written, stays on the device"]
+    V -->|Yes| B{"row.server_seq > base_seq?"}
+    B -->|No| APP["applied<br/>written, server_seq bumped"]
+    B -->|Yes| CON["conflict<br/>WRITTEN under LWW,<br/>then flagged to the user"]
+    APP --> T["In both write paths:<br/>deleted_at is never cleared"]
+    CON --> T
+```
+
+The three cases this exists for (ADR §2.14): a stale device reverting a newer edit, a stale edit
+resurrecting a deleted record, and two devices creating one logical budget slot. None of them is
+a concurrency race — the writes are days apart — which is why no lock, timestamp, or device key
+addresses them.

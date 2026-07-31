@@ -17,8 +17,8 @@ Baca dulu, urut:
 
 Konteks: kita sedang merancang perubahan besar — offline-first sync + receipt
 scanning pakai LLM. Dibahas satu item backlog per sesi supaya tidak menumpuk.
-Item 1.1 (bentuk domain sync) selesai di ADR §2.11; item 1.2 (sumber
-perubahan sisi pull) selesai di ADR §2.12–§2.13, dan menutup 1.4.
+Track 1 item 1.1–1.5 sudah selesai (ADR §2.11–§2.14); 1.4 tertutup
+sendiri. Kontrak API sudah tidak terblokir, Track 4 sudah bisa jalan.
 
 Sekarang bahas item: [ITEM]
 
@@ -46,17 +46,19 @@ Catatan:
 
 ## Where things stand
 
-**Settled:** 1.1 — sync domain architecture (ADR §2.11) · 1.2 — pull reads entity rows,
-`server_seq` from a per-user in-transaction counter (ADR §2.12–§2.13) · 1.4 — collapsed by
-1.1 + 1.2, nothing left to decide
+**Settled — Track 1 core is done, nothing wire-visible is left open:**
+1.1 sync domain architecture (§2.11) · 1.2 pull reads entity rows, `server_seq` from a per-user
+in-transaction counter (§2.12–§2.13) · 1.4 collapsed by 1.1 + 1.2 · 1.5 push semantics —
+`base_seq`, detect/apply/flag, per-record batches, sticky tombstones, budget natural key (§2.14)
 
-**Recommended next:** 1.5 — push semantics. It is the last 🔴 in Track 1 and the last piece of
-Track 1 that is **wire-visible and therefore locked at launch**; 1.3 and 1.6 are now small and
-mostly mechanical, and 1.7/1.8 are narrowed. Two questions carry it: what `conflict` even means
-on a single-device product where the server adjudicates by ingest order (if nothing, the status
-should be dropped from the contract before it ships, not after), and whether a batch is atomic
-or per-record — ADR §2.11 put transaction granularity in the domain's hands via `ApplyBatch`,
-so this decides what the *aggregate* result means when one kind partially fails.
+**Recommended next:** **5.1 — the OpenAPI contract.** It is now unblocked and it is what
+unblocks everyone else: `@backend` and `@frontend` run in parallel against it, and the frontend
+mocks from it until endpoints land. Remaining Track 1 items (1.3, 1.6, 1.7, 1.8) are all
+server-internal and can be settled while that work proceeds.
+
+If you would rather keep discussing design: **2.4** (three login cases — the middle one is the
+primary data-loss path in the whole design) or **3.2** (receipt extraction JSON Schema) are the
+two remaining 🔴 items that are not blocked by anything.
 
 **Quick wins available any time** — manager decisions, no design discussion needed:
 2.1 refresh-token TTL · 3.4 monthly scan cap · 3.6 model tier

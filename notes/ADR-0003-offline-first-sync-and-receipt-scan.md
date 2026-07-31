@@ -60,9 +60,14 @@ GET  /v1/sync/changes?since=<seq>&limit=<n>
      → { protocol_version, changes: [...], next_cursor, has_more }
 
 POST /v1/sync/changes
-     → { protocol_version, results: [ { client_id, status, server_seq } ], next_seq }
+     ← { protocol_version, changes: [ { kind, id, base_seq, deleted_at, payload } ] }
+     → { protocol_version, results: [ { id, status, reason, server_seq } ], next_seq }
      status ∈ applied | conflict | rejected
 ```
+
+`base_seq` is the `server_seq` the client last held for that record, or `0` for a record the
+server has never seen. It is what lets the server detect a write made on top of a stale version.
+See §2.14 for the three statuses — note that `conflict` means the write **was** applied.
 
 - A fresh login is the same endpoint with `since=0`. Bootstrap is not a special code path;
   it is the extreme case of ordinary sync.
@@ -73,14 +78,16 @@ POST /v1/sync/changes
 
 ### 2.4 Push ordering is part of the contract
 
-Foreign keys must resolve at ingest. The client MUST push in this order, and the server
-MUST hydrate in this order:
+Foreign keys must resolve at ingest. Push and hydration need **different orders**, because
+categories are pull-only (§2.7) and therefore cannot appear on the push path at all:
 
 ```
-accounts → categories (parent before child) → budgets → transactions (parent before split child)
+Push   (client → server):  accounts → budgets → transactions (parent before split child)
+Apply  (server → client):  accounts → categories (parent before child) → budgets → transactions
 ```
 
-This is a contract requirement, not an implementation detail.
+This is a contract requirement, not an implementation detail. The server must not trust the
+client's ordering — it re-orders by kind itself (§2.11).
 
 ### 2.5 Schema changes
 
@@ -115,7 +122,7 @@ Test applied: *would the user be upset to lose this if their phone died?*
 | Transactions | ↕ two-way | Core product data. Includes `000` placeholders, review state, splits. |
 | Accounts | ↕ two-way | Small, required offline by Capture. |
 | Categories — all of them | ⬇ server → device | Server-owned entirely. Creating, editing, and hiding a category require connectivity. See §2.7. |
-| Budgets | ↕ two-way | Small; per category per month. LWW is safe. |
+| Budgets | ↕ two-way | Small; per category per month. **LWW alone is not sufficient** — a budget has a natural key, so two devices can create two rows for one logical slot. See §2.14. |
 | User profile (`/me`) | ⬇ server → device | Profile edits require connectivity. See §2.8. |
 | Dashboard aggregates | ✗ not synced | Computed locally from Drift (already the case). |
 | Sessions / tokens | ✗ local only | — |
@@ -477,6 +484,128 @@ Because pull reads live rows, a row removed by any path other than a tombstone b
 side. Soft-delete enforcement is therefore load-bearing for sync correctness, not just for read
 correctness, on `transactions`, `accounts`, `categories`, and `budgets`.
 
+### 2.14 Push semantics
+
+*Settled in discussion item 1.5.*
+
+#### Conflict is real, and it is a staleness problem — not a concurrency problem
+
+"Single device" is a product intention, not an enforced constraint: the session soft-limit is
+10, so logging in on a second device does not end the first device's session. §2.1 already scopes
+the sequential-device window. Three concrete cases were worked through, and none of them involves
+two writes happening at the same moment:
+
+| # | Case | What LWW alone does |
+|---|---|---|
+| **A** | Device A edits transaction X offline on Monday. Device B edits the same X on Wednesday and syncs. A reconnects Thursday. | A's Monday content wins on ingest order. B's newer correction is silently reverted. |
+| **B** | Device B deletes X on Tuesday and syncs. A pushes an edit to X on Thursday, carrying `deleted_at = null`. | The update clears the tombstone. **A deleted record comes back to life with stale content.** |
+| **C** | Both devices create a budget for Food/August, each with its own client UUID. | LWW cannot see it — the `id`s differ. Result is two rows for one logical slot and a double-counted dashboard. |
+
+Because the gap between the two writes is *days*, no ordering or locking mechanism removes any
+of them. This was tested against three proposals in discussion and none moved the needle:
+
+- **Keying sync by device** — detects staleness at best, and worse than `base_seq` does (a device
+  cursor is a global watermark, so a device's own unpulled writes look stale). Per-device
+  sequences are version vectors under another name, rejected by §2.2. Reintroduces the `devices`
+  table §4 counts as removed, on an identity that reinstalls do not preserve.
+- **Server ingest timestamp instead of an integer** — orders by arrival exactly as the counter
+  does, so it changes no outcome, while adding three silent failure modes: ties (a batch push in
+  one transaction stamps every record identically, so paginating past them skips records),
+  the same commit-visibility gap that disqualified `nextval` in §2.12, and a clock that NTP can
+  step backwards. Counter monotonicity is structural; clock monotonicity is a hope.
+- **Advisory lock per `user_id` + entity** — serialises concurrent syncs, but the conflicting
+  writes are days apart, so the lock is uncontended exactly when it would be needed. Separating
+  the push and pull lock keys is correct as far as it goes, and following it through shows why
+  it is unnecessary: a pull writes nothing, so a pull lock guards nothing, leaving "serialise
+  writes per user" — which the `user_sync_state` row lock in §2.12 already does, on the write
+  path only, released at commit, with no connection-pool leak risk.
+
+The conclusion is structural: **conflict is semantic, not mechanical.** Two human intentions, at
+two different times, about one record. No sequence, clock, lock, or table can say which intention
+was right, because that information is not in the system. Only three levers exist — prevent a
+second writer (which would mean disabling the product), detect that a write stood on a stale
+version, or set a policy for what happens then. The third is unavoidable; the only real choice is
+whether the user is told.
+
+#### `base_seq` is what makes push-first safe
+
+§2.9 requires **push before pull**, so that unsynced local writes are transmitted before anything
+overwrites them. That ordering is right — pulling first would destroy the local edit before it
+was ever sent — but it means **the pushing device is pushing blind**: it cannot know what changed
+on the server, because it has not pulled yet.
+
+The device does, however, know which version it edited. So every pushed record carries
+`base_seq`, and the server — which holds both halves — makes the comparison the device could not:
+
+```
+row.server_seq > base_seq   →   this write stood on a stale version
+```
+
+This is optimistic concurrency control riding on a sequence that already exists. No new table, no
+clock, no device identity, and it is per record rather than per device, so it does not produce
+false positives on the device's own unpulled writes.
+
+#### The three statuses
+
+| Status | Written? | Meaning |
+|---|:--:|---|
+| `applied` | yes | `base_seq` matched the row, or the server had never seen this `id` |
+| `conflict` | **yes** | Applied under LWW, **but** it stood on a stale version. The client must surface it |
+| `rejected` | no | A business rule or constraint failed. The record stays `dirty`/`rejected` on the device |
+
+`conflict` meaning *applied* is the part most likely to be implemented wrongly. It is not a
+failure — the record landed, and the client's copy is now authoritative. What the user is being
+told is that their write overwrote a newer one.
+
+**Chosen policy: detect, apply, and flag** — not "reject and make the user merge". A merge UI
+showing old and new values side by side is real design and build work for an event that may occur
+once a year on a product that does not promise multi-device use. The already-planned
+needs-attention surface (§2.8) is reused instead.
+
+This is deliberately the cheap half of a reversible decision. **`base_seq` on the wire is what
+locks at launch**; the reaction to it is server-side logic that can change at any time without an
+app release. Adding the field later would mean negotiating with app versions that persist on
+devices for months.
+
+#### Batch granularity: per record, grouped by the domain
+
+**A rejected record must never block the rest of the batch.** A device pushing three days of
+offline work cannot be stopped by one transaction the server refuses — that would leave the
+device unable to make progress at all, which is the failure this whole design exists to prevent.
+
+So the batch is **not** atomic as a whole, and not atomic per kind. Each record succeeds or fails
+on its own, except where a domain knows several records must land together (a split parent and its
+children). That grouping is the domain's call, consistent with §2.11 putting transaction
+granularity in the domain's hands.
+
+Consequence: a partially applied batch is the normal case, not an error path. A concurrent pull
+from another device can therefore observe a torn batch — a transaction whose account has not
+landed yet. This is already handled: item 4.2 defers foreign-key checks inside the client's apply
+transaction, and the remainder arrives on the next pull. It self-heals.
+
+#### Two rules that close cases B and C
+
+These are defects, not preferences, and hold regardless of the conflict policy.
+
+1. **Tombstones are sticky.** An update may never clear `deleted_at`. Once deleted, a record stays
+   deleted; undelete is an explicit, separate action, not a side effect of a stale edit landing.
+2. **Budgets have a natural key.** `(user_id, category_id, period)` is unique. The second device
+   to create the same slot gets `rejected` with a reason the client can act on, rather than a
+   duplicate row. The client-generated UUID remains the row's identity; the natural key is a
+   constraint on top of it.
+
+#### Sync log and `ingested_at` — operational only
+
+Two additions for debugging and support, deliberately off the correctness path:
+
+- A **sync log**: who synced, when, from what cursor, how many records pushed, and the
+  applied/conflict/rejected counts. Without it, a "my data disappeared" report is uninvestigable.
+- An **`ingested_at`** column alongside `server_seq` on each synced table, so a human reading the
+  database sees "3 Aug 14:22" rather than "seq 1450".
+
+Neither is ever read by the pull path. That is what keeps them compatible with §2.12: what was
+rejected there was a changelog as the *source* of changes, not the existence of a log.
+
 ---
 
 ## 3. LLM receipt scanning
@@ -615,6 +744,10 @@ Both copies of `api-documentation/*.yaml` must be updated together, per the work
 | **Client silently skips a record** because a lower `server_seq` committed after a higher one | Per-user counter incremented inside the write transaction; global Postgres sequence rejected (§2.12) |
 | **Zombie record** on the client after an out-of-band hard delete | Hard delete banned on all four synced tables; enforcement is item 1.6 (§2.13) |
 | **A change invisible to sync** because a write path forgot to bump `server_seq` | Assignment lives in the repository layer, not the sync usecase (item 1.3); conformance suite (§2.11) |
+| **A stale device silently reverts a newer edit** | `base_seq` on every pushed record; server returns `conflict` and the client surfaces it (§2.14) |
+| **A deleted record resurrected** by a stale edit landing later | Tombstones are sticky — an update never clears `deleted_at` (§2.14) |
+| **Two budgets for one category-month**, invisible to LWW because the `id`s differ | Unique natural key `(user_id, category_id, period)`; the loser is `rejected` (§2.14) |
+| One bad record blocks a device's entire backlog | Per-record batch granularity; a `rejected` record never stops the rest (§2.14) |
 | FK failure on push | Contractual push ordering (§2.4) |
 | Indonesian number-format misreads by the model | Explicit prompt rules + server-side range validation + mandatory user confirmation |
 | Scan cost overrun | Per-user monthly cap + image-hash cache + measured downsampling |
