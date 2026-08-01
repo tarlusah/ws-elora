@@ -1,12 +1,18 @@
-# PRD — Offline-first sync + LLM receipt scanning
+# PRD — Online-required writes + LLM receipt scanning
 
 - **Cycle:** next feature/change cycle
-- **Date:** 2026-07-31
+- **Date:** 2026-08-01 (revised — see revision note below)
 - **Baseline:** `shared/context/PRD.md` (consolidated status — read that first for where the
   project stands today)
-- **Architecture decision:** `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` — the
+- **Architecture decision:** `notes/ADR-0004-online-required-writes-and-receipt-scan.md` — the
   authoritative record for *why* each choice was made. This PRD states *what* to build.
 - **Status:** awaiting manager approval → then `@pm` writes `user-stories.md`, then `@architect`
+
+**Revision note:** this PRD originally described full bidirectional offline-first sync (see
+`notes/ADR-0003-offline-first-sync-and-receipt-scan.md`). On 2026-08-01 the manager stepped that
+back to an online-required-write model before any production user exists — implementation cost
+was judged too high for the product's current stage. This revision reflects that decision. The
+receipt-scanning half is essentially unchanged.
 
 ---
 
@@ -14,17 +20,17 @@
 
 Two changes ship in one cycle because they touch the same data paths:
 
-1. **Offline-first sync becomes real.** Spendos already stores locally, but the sync engine was
-   simplified independently on both surfaces and never reconciled. This replaces it with a
-   cursor-based bidirectional delta sync, makes the local database the source of truth, and
-   defines exactly what happens when auth expires or a user re-logs in on a device that still
-   holds unsynced data.
+1. **Writes require a live connection; reads work offline from a local cache.** Spendos already
+   stores locally (Drift). That cache keeps its role for fast, offline-capable *reading* —
+   accounts, transactions, budgets, categories, dashboard aggregates all display the last data
+   fetched from the server. Creating, editing, or deleting anything requires connectivity at that
+   moment. There is no local write queue, no sync protocol, no conflict resolution.
 2. **Receipt scanning via LLM.** The user photographs a receipt; a server-side model extracts
    merchant, total, date, and line items; the result lands in the existing Review queue as a
-   suggestion the user confirms.
+   suggestion the user confirms. Like every other write, this requires connectivity.
 
-There is **no production data and no backward-compatibility requirement**, so breaking changes
-(soft delete, client-generated IDs, schema resets) are taken now rather than worked around.
+There is **no production data and no backward-compatibility requirement**, so this cycle uses
+plain, server-authoritative CRUD rather than the sync protocol previously scoped.
 
 ---
 
@@ -32,93 +38,75 @@ There is **no production data and no backward-compatibility requirement**, so br
 
 | # | Goal | Success looks like |
 |---|---|---|
-| G1 | The app is fully usable offline once logged in | Capture, Review, History, Dashboard, and Budget all work with the network off |
-| G2 | No user data is ever lost | No path — including auth failure, session eviction, or re-login — destroys unsynced local writes |
-| G3 | Data survives a lost phone | A fresh install + login restores every account, category, budget, and transaction |
-| G4 | Sync is invisible when it works and legible when it doesn't | A clear status indicator; rejected records are visible and resolvable |
-| G5 | Receipt capture is faster than typing | Photo → confirmed transaction in fewer steps than manual entry |
-| G6 | Scanning never blocks capture | A receipt captured offline still produces a usable transaction immediately |
+| G1 | The app is usable offline for **reading** | Viewing Capture history, Review, History, Dashboard, and Budget all work with the network off, showing the last-fetched data |
+| G2 | Writing is honest about connectivity | Every create/edit/delete action fails immediately and explicitly ("needs connection") when offline — never silently queued, never silently lost |
+| G3 | Data survives a lost phone | A fresh install + login restores every account, category, budget, and transaction from the server |
+| G4 | Receipt capture is faster than typing | Photo → confirmed transaction in fewer steps than manual entry |
+| G5 | Scanning never blocks the user on the model | The user can always type the amount manually instead of waiting for extraction |
+
+**Dropped from the previous cycle's goals** (see ADR-0004 §4): "fully usable offline including
+writes," "no user data ever lost via a local write queue," and "sync status indicator / rejected
+records visible" — these depended on the offline-write mechanism this cycle no longer builds.
 
 ## 3. Non-goals (explicitly out of scope this cycle)
 
-- **Multi-device concurrent use.** One account, one active device at a time.
+- **Offline writes of any kind.** Creating, editing, or deleting anything requires connectivity.
+  This is the one that changed — see ADR-0004.
+- **Multi-device concurrent use.** One account, sequential device use, as before.
 - **Anonymous / no-account mode.** Login is required.
-- **Time-windowed sync.** The full business dataset syncs.
-- **Receipt images syncing across devices.** Images are device-local in v1.
-- **Offline receipt extraction / on-device models.** Extraction requires connectivity.
+- **Receipt images syncing across devices.** Images are device-local, extracted then discarded
+  server-side.
+- **Offline receipt extraction / on-device models.** Extraction requires connectivity — no longer
+  a special case, since everything does now.
 - **Web client.** Server dashboard endpoints are retained for it, but it is not built here.
 
 ---
 
-## 4. Scope — Offline-first sync
+## 4. Scope — Online-required writes, local read cache
 
 ### 4.1 What the user experiences
 
-- Log in once. From then on, everything works offline until the refresh token expires
-  (proposed 60 days, sliding — **pending confirmation**).
-- When the refresh token does expire, the app says *"reconnect to continue"*. It does **not**
-  log the user out of their own data and it does **not** delete anything.
-- A sync status indicator shows `syncing` / `synced` / `failed`.
-- If the server rejects a record, the user sees it in a dedicated "needs attention" state with
-  enough context to fix it — including for a transaction entered days earlier.
-- Explicit logout warns before wiping if unsynced records exist.
+- Viewing data — Capture history, Review, History, Dashboard, Budget — works offline, showing
+  whatever was last fetched.
+- Creating, editing, or deleting a transaction, account, budget, or category **requires an active
+  connection**. Attempting it offline shows an explicit "needs connection" message immediately —
+  the action does not happen and nothing is queued to happen later.
+- Session length (refresh-token TTL) is a normal "how long before you must log in again" — not an
+  offline-window promise. Value pending manager confirmation (§8).
+- Logging in as a different user on the same device simply replaces the cached data — the
+  previous user's cache is cleared before the new user's data is fetched.
 
 ### 4.2 What gets built — backend (`elora-be-go`)
 
 | Item | Detail |
 |---|---|
-| Retire old sync domain | Delete `POST /v1/sync`, `GET /v1/sync/status`, `PUT /v1/sync/{id}` |
-| New delta endpoints | `GET /v1/sync/changes?since=&limit=` and `POST /v1/sync/changes` |
-| `protocol_version` | On every sync request and response; too-old clients rejected explicitly |
-| Pagination | `limit` / `next_cursor` / `has_more` mandatory — no unbounded responses |
-| Schema: 4 domains | `transactions`, `accounts`, `categories`, `budgets` gain `deleted_at` and `server_seq`; `id` becomes client-supplied UUIDv7 |
-| Soft delete | Hard DELETE replaced by tombstones across all four domains. **No remaining hard-delete path** — pull reads live rows, so one hard delete is a permanent zombie record on the client (ADR §2.13) |
-| Ingest sequencing | Server assigns monotonic `server_seq` per user, from a **per-user counter incremented inside the write transaction** (not a global Postgres sequence — commit-order gaps silently skip records). Device clocks never trusted. See ADR §2.12 |
-| Pull read model | Each domain answers `ChangesSince` from **its own entity rows** — `WHERE user_id = ? AND server_seq > ? ORDER BY server_seq LIMIT n`, index `(user_id, server_seq)`. No changelog table, no event/projection feed. See ADR §2.12 |
-| Push validation | Server re-validates every record; returns `applied` / `conflict` / `rejected` per record. **`conflict` means the write was applied** — it flags that the client's write stood on a stale version, detected via `base_seq`. See ADR §2.14 |
-| Batch granularity | **Per record.** One rejected record never blocks the rest of a device's backlog. A domain may group records that must land together (split parent + children) |
-| Sticky tombstones | An update may never clear `deleted_at`. Undelete is an explicit separate action, never a side effect of a stale edit arriving late |
-| Budget natural key | Unique `(user_id, category_id, period)`. Two devices creating the same category-month is invisible to LWW — the `id`s differ — so the constraint is what prevents a duplicate slot |
-| Sync log + `ingested_at` | Operational only, never read by the pull path: who synced, when, from what cursor, push counts by status; plus a human-readable ingest timestamp per row |
-| Sync domain rewrite | Thin orchestrator over consumer-defined `SyncPushable` / `SyncPullable`; shared value types in `pkg/synccontract`; no entity, no repository. See ADR §2.11 |
-| Conformance test suite | `pkg/synccontract/testing` — every domain implementation must pass it |
-| `default_account_id` on user | Replaces the per-account `is_default` flag (avoids a two-record atomic update) |
-| `/me` endpoint | Completes the Profile placeholders noted in the baseline PRD |
-| Auth | Refresh-token grace window during rotation; session eviction must not look like a clean install |
+| No sync domain | The old sync log (`POST /v1/sync`, `GET /v1/sync/status`, `PUT /v1/sync/{id}`) stays retired; no delta endpoints replace it |
+| Standard CRUD | Existing per-domain REST endpoints (`transactions`, `accounts`, `budgets`, `categories`) are the only write surface |
+| `id` generation | Server-generated, as it was before ADR-0003 — no client-supplied UUID |
+| Delete semantics | Plain `DELETE`. No `deleted_at` tombstone requirement (a separate "undo" UX could reintroduce one later, independent of this decision) |
+| No `server_seq` | No pull cursor, no push staleness check — neither concept applies without a sync protocol |
+| `default_account_id` on user | Replaces the per-account `is_default` flag (avoids a two-record atomic update) — unaffected by this pivot, still worth doing |
+| `/me` endpoint | Completes the Profile placeholders noted in the baseline PRD — unaffected by this pivot |
+| Auth | Refresh-token TTL is still a decision to make (§8); rotation + grace window is a nice-to-have against spurious logouts, not a correctness requirement anymore |
 
 ### 4.3 What gets built — frontend (`elora_spendos`)
 
 | Item | Detail |
 |---|---|
-| Rewrite `lib/core/sync/` | Replace, do not refactor. Cursor delta sync with `last_synced_seq` |
-| Client-generated IDs | UUIDv7 at record creation |
-| Dirty tracking | `sync_state`: `clean` / `dirty` / `rejected`. Each row also keeps the `server_seq` it was last known at, pushed back as `base_seq` |
-| Conflict surfacing | A `conflict` result means the write landed but overwrote a newer one. Shown in the same needs-attention surface as rejected records — no merge UI |
-| Retry with backoff | Exponential, max 3 attempts, debounced — specified in TASK-FE-01 but never implemented |
-| Sync status UI | `syncing` / `synced` / `failed` — specified but never implemented |
-| Rejected-record UI | **New surface.** Visible, explains why, lets the user fix and re-push |
-| Login flow branching | Clean install → hydrate. Same user with local data → **push first, then pull**. Different user → isolate/wipe |
-| Logout flow | Warn-if-unsynced, then wipe. Distinct from token expiry, which never wipes |
-| Drift schema reset | Bump version and recreate — no migration steps needed |
-| **Repository layer cleanup** | Budget, History, Review, Dashboard, Profile currently call Drift directly. Restore the mandatory `Repository → Provider → Screen` pattern while these paths are open |
-| Budget feature | Still a 9-line stub. Design HTML shipped 2026-05-15; build it on the new data layer rather than building it twice |
+| Read-cache refresh | Paginated `GET` fetch on app foreground and after every successful write, upserted into Drift. Not cursor/delta based. |
+| Write connectivity gate | Every create/edit/delete action checks connectivity first and fails fast with an explicit message if offline |
+| No dirty tracking, no retry/backoff, no conflict UI, no rejected-record UI | None of these apply without a write queue |
+| Cache freshness indicator (optional) | A simple "data as of [time]" label on cached views, if wanted — much lighter than the previous `syncing`/`synced`/`failed` state machine |
+| Login flow | Authenticate → fetch from server → populate cache. One case, not three. |
+| Logout flow | Plain wipe — no "warn if unsynced records exist" check, since nothing local is ever unsynced |
+| **Repository layer cleanup** | Budget, History, Review, Dashboard, Profile currently call Drift directly. *No longer bundled into this cycle by necessity* (see ADR-0004 §2.5) — worth doing, schedule independently at whatever priority the manager wants |
+| Budget feature | Still a 9-line stub. Unaffected by this pivot; still its own open item |
 
-### 4.4 Push ordering (contract requirement)
+### 4.4 What syncs (i.e., what the read cache holds)
 
-```
-accounts → categories (parent before child) → budgets → transactions (parent before split child)
-```
-
-Applies to both client push and server hydration. A transaction created offline that references
-a category also created offline must not fail its foreign key.
-
-### 4.5 What syncs
-
-Two-way: transactions (incl. `000` placeholders, review state, splits), accounts, budgets.
-Server → device only: categories (all of them — creating, editing, and hiding a category
-requires connectivity), user profile.
-Not synced: dashboard aggregates (computed locally), sessions/tokens, UI preferences,
-sync bookkeeping, **receipt images**.
+Transactions (incl. `000` placeholders, review state, splits), accounts, budgets, categories, and
+user profile are all fetched and cached for offline reading. Dashboard aggregates are computed
+locally from the cache, as before. Not cached: sessions/tokens, receipt images.
 
 ---
 
@@ -127,26 +115,24 @@ sync bookkeeping, **receipt images**.
 ### 5.1 User flow
 
 1. From Capture, the user taps *scan receipt* and takes or picks a photo.
-2. The image is compressed and stored **locally**; a draft transaction is created immediately
-   with `scan_pending`.
-3. The user can type the amount manually at any point — **the transaction is never blocked on
-   the model**.
-4. Online: the image uploads, the server extracts, the draft is populated with merchant, total,
-   date, currency, line items, and a suggested category.
-5. Offline: the draft stays queued and processes on reconnect.
-6. The extraction appears in the existing **Review** queue as a suggestion. **The user always
-   confirms.** Nothing is auto-committed.
+2. **This requires connectivity**, the same as any other write now — no offline fallback queue.
+3. The image uploads; the server extracts merchant, total, date, currency, line items, and a
+   suggested category.
+4. A draft transaction is created **with those fields already populated**, landing in the
+   existing Review queue as a suggestion.
+5. The user can always type the amount manually instead of waiting for extraction — the
+   transaction is never blocked on the model, only on connectivity, same as everything else.
+6. **The user always confirms. Nothing is auto-committed.**
 
-This deliberately reuses the product's existing "capture fast, resolve later" shape — the same
-mental model as the `000` placeholder. No new concept is introduced for the user to learn.
+This still reuses the product's existing "capture fast, resolve later" shape for the *model's*
+role — the user is never blocked waiting on the model — but capture itself now requires
+connectivity like every other write, so there is no separate offline-queue behavior to design for
+scanning specifically.
 
-### 5.2 Accuracy requirements (Indonesian receipts)
+### 5.2 Accuracy requirements (Indonesian receipts) — unchanged
 
-These are correctness requirements, not nice-to-haves:
-
-- **Number format.** Thousands separator `.`, decimal separator `,` (`Rp 1.500,00`). This is the
-  most likely source of a 100× or 1000× error and must be handled explicitly in the prompt and
-  validated server-side.
+- **Number format.** Thousands separator `.`, decimal separator `,` (`Rp 1.500,00`). Handled
+  explicitly in the prompt and validated server-side.
 - **PPN 11% and service charge** lines must not be mistaken for the total.
 - The server **range-checks** the extracted total against recognised line items before returning.
 - Low-confidence extractions are marked as such, not presented as certain.
@@ -160,7 +146,7 @@ These are correctness requirements, not nice-to-haves:
 | Structured output | JSON Schema via `output_config.format` — the backend does not parse free-form text |
 | Prompt caching | Extraction rules prompt is stable and exceeds the 512-token minimum; cache reads cost ~0.1× |
 | Idempotency | Keyed by image hash — the same receipt scanned twice must not incur a second model call |
-| Rate limiting | **Per-user monthly scan cap, required in v1** — number pending manager decision |
+| Rate limiting | Per-user monthly scan cap, required in v1 — number pending manager decision |
 | Image retention | Extract, then discard server-side. Nothing persisted. |
 | Sizing | `max_tokens` must account for thinking + response together (thinking is on by default on `claude-opus-5`) |
 
@@ -170,63 +156,36 @@ These are correctness requirements, not nice-to-haves:
 
 - Camera / gallery capture, client-side compression.
 - Local image store, never synced.
-- Offline scan queue with retry.
+- Explicit "needs connection" state when offline — the scan action is simply unavailable, not
+  queued.
 - Populated-draft confirmation UI inside the existing Review flow.
-- Explicit "scan needs connection" state when offline.
 
-### 5.5 Cost
+### 5.5 Cost — unchanged
 
-At `claude-opus-5` rates, roughly **$0.02–0.04 per scan** depending on image resolution
-(~4.8K image tokens at full resolution + ~400 output tokens). At 100 scans/month that is
-roughly $2–4 per user per month — material for a personal expense tracker.
-
-Consequences already reflected above: the monthly cap and image-hash cache are **v1 scope, not
-deferred**. Downsampling is the main additional lever and must be measured against extraction
-accuracy rather than assumed.
-
-Stepping down to `claude-sonnet-5` or `claude-haiku-4-5` is a deliberate quality/cost tradeoff
-and is the **manager's decision** — see §8.
+At `claude-opus-5` rates, roughly **$0.02–0.04 per scan** depending on image resolution. At 100
+scans/month that is roughly $2–4 per user per month. The monthly cap and image-hash cache are v1
+scope, not deferred. Stepping down to `claude-sonnet-5` or `claude-haiku-4-5` is the manager's
+call — see §8.
 
 ---
 
 ## 6. Acceptance criteria
 
-Sync:
+Online-required writes:
 
-- [ ] With the network disabled, a user can create, edit, delete, review, split, and categorise
-      transactions; manage accounts, categories, and budgets; and view Dashboard and History.
-- [ ] Reconnecting pushes every local change and pulls every remote change, in the contractual
-      order, with no foreign-key failure.
-- [ ] A fresh install + login restores the complete dataset.
-- [ ] **Re-login on a device holding unsynced writes pushes them before pulling — nothing is lost.**
-- [ ] Refresh-token expiry produces a "reconnect required" state and destroys nothing.
-- [ ] Session eviction (soft-limit) follows the push-first path, not the clean-install path.
-- [ ] Refresh-token rotation interrupted by network loss does not lock the user out.
-- [ ] Logging in as a different user on the same device does not mix data.
-- [ ] Explicit logout warns when unsynced records exist.
-- [ ] A server-rejected record is visible, explained, and resolvable in the UI.
-- [ ] A record pushed on top of a version newer than the device held is applied and reported as
-      `conflict`, and the user is told — it is not silently overwritten and not lost.
-- [ ] One rejected record in a batch does not stop the other records in that batch from applying.
-- [ ] A record deleted on one device is not resurrected by a stale edit pushed afterwards.
-- [ ] Two devices creating a budget for the same category and month produce one budget, not two.
-- [ ] Deleting a record on one device does not resurrect it after sync.
-- [ ] Concurrent writes to the same user never cause a pull to skip a record — a client that
-      paginates while writes are landing ends up with every change.
-- [ ] No write path on the four synced tables hard-deletes: not the API, not a cleanup job, not
-      a cascading foreign key.
-- [ ] A change made through a non-sync path (the REST CRUD endpoints, if retained) is picked up
-      by the next pull — `server_seq` is bumped there too.
-- [ ] Offline, the user can categorise transactions using existing categories; attempting to
-      create or hide a category shows a clear "needs connection" state rather than failing.
-- [ ] Every domain implementing `SyncPushable` / `SyncPullable` passes the shared conformance
-      test suite.
-- [ ] A client sending an unsupported `protocol_version` receives an explicit error.
-- [ ] Budget/History/Review/Dashboard/Profile go through a repository layer.
+- [ ] With the network enabled, a user can create, edit, delete, review, split, and categorise
+      transactions; manage accounts, categories, and budgets.
+- [ ] With the network disabled, the same actions fail immediately with an explicit "needs
+      connection" message — nothing is silently queued or silently lost.
+- [ ] With the network disabled, the user can still view Capture history, Review, History,
+      Dashboard, and Budget using the last-fetched data.
+- [ ] A fresh install + login restores the complete dataset from the server.
+- [ ] Logging in as a different user on the same device replaces the cache — no data mixing.
+- [ ] Refresh-token expiry produces a "log in again" state without corrupting the local cache.
 
 Receipt scanning:
 
-- [ ] A receipt captured offline yields a usable transaction immediately and extracts on reconnect.
+- [ ] Attempting to scan while offline shows an explicit "needs connection" state.
 - [ ] Extraction never auto-commits; the user confirms every value.
 - [ ] `Rp 1.500,00` is read as 1500, not 150000 or 1.5.
 - [ ] PPN and service charge are not mistaken for the total.
@@ -240,16 +199,17 @@ Receipt scanning:
 
 1. Manager approves this PRD and answers §8.
 2. `@pm` writes `user-stories.md`.
-3. `@architect` updates **both** copies of `api-documentation/*.yaml` (sync endpoints, receipt
-   scan endpoint, schema changes) and the data model. The two copies must not drift.
+3. `@architect` updates **both** copies of `api-documentation/*.yaml` — the receipt-scan endpoint,
+   plus whatever schema changes fall out of dropping client-generated ids and tombstones. The two
+   copies must not drift.
 4. `@backend` and `@frontend` run in parallel against the agreed contract, each in its own
    worktree. The frontend uses contract mocks until the backend endpoint lands.
-5. `@qa` tests both surfaces, with a specific matrix for the offline → sync → conflict →
-   resolve paths and the three login cases.
+5. `@qa` tests both surfaces: the online-write happy path, the offline "needs connection" gate,
+   and the receipt-scan flow. No conflict/rejected-record matrix — that mechanism doesn't exist.
 6. Manager review → `@devops` deploy.
 
-**Sequencing note:** Budget is a clean slate on the frontend and should be built once, on the
-new data layer — not built now and rewritten after the sync work.
+**Sequencing note:** Budget is a clean slate on the frontend and should be built once — not now
+and rewritten again later, unaffected by this pivot.
 
 ---
 
@@ -257,9 +217,10 @@ new data layer — not built now and rewritten after the sync work.
 
 | # | Decision | Default if unanswered |
 |---|---|---|
-| 1 | Refresh-token TTL — the public promise of "how long you can stay offline" | 60 days, sliding |
+| 1 | Refresh-token / session TTL | 60 days, sliding (carried over from ADR-0003; now lower-stakes) |
 | 2 | Model tier for extraction | `claude-opus-5` |
 | 3 | Per-user monthly scan cap | — none; a number is required |
+| 4 | Hard delete vs. soft delete | Hard delete (no longer forced by sync; free choice — see ADR-0004 §5) |
 
 ---
 
@@ -268,6 +229,9 @@ new data layer — not built now and rewritten after the sync work.
 - The remote GitHub copies of both repos are roughly 1–2 weeks behind what the baseline PRD
   describes (backend last pushed 2026-05-09, frontend 2026-05-02, versus status documents dated
   2026-05-15/16). Push local work before relying on the remote as the source of truth.
-- Field names and details in the ADR (e.g. whether system categories can be renamed by users)
-  were derived from the domain list in `shared/context/PRD.md`, not from the live schema. They
-  must be verified against the actual code before entering the API contract.
+- `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` remains as historical record of the
+  fuller offline-first design. It is not wrong — it was superseded for cost reasons at the
+  product's current pre-production stage, and remains available to revisit in a future cycle.
+- Field names and details (e.g. whether system categories can be renamed by users) were derived
+  from the domain list in `shared/context/PRD.md`, not from the live schema. They must be
+  verified against the actual code before entering the API contract.

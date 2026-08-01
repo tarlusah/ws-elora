@@ -1,6 +1,12 @@
 # ADR 0003 — Offline-first sync (cursor delta) + LLM receipt scanning
 
-- **Status:** Accepted (supersedes and closes `elora-be-go/docs/decisions/0001-defer-sync-rewrite.md`)
+- **Status:** **Superseded 2026-08-01 by `ADR-0004-online-required-writes-and-receipt-scan.md`**
+  for §2.1–§2.14 (the offline sync protocol, schema, and login-case design) — cost of
+  implementation was judged too high for the product's pre-production stage. The design itself
+  was not wrong and remains available to revisit in a future cycle. §3 (receipt scanning) is
+  carried forward into ADR-0004 largely unchanged and should be read there going forward; kept
+  here for historical reference. (Still supersedes and closes
+  `elora-be-go/docs/decisions/0001-defer-sync-rewrite.md` — that closure is untouched.)
 - **Date:** 2026-07-31
 - **Decided by:** Manager (human)
 - **Scope:** Both repos — `elora-be-go` and `elora_spendos`
