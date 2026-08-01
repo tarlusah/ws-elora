@@ -68,10 +68,10 @@ All items below are still open exactly as before.
 
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
-| 3.1 | **Domain shape** | No repository for receipts (nothing persisted) — but quota needs one. Precedent: `dashboard` is aggregation-only with no entity. | 🟡 | ☐ |
+| 3.1 | ~~**Domain shape**~~ | **☑ Settled → ADR-0004 §3.7.** No entity/repo for receipt content itself (nothing persisted). Quota `(user_id, period) → count` and idempotency `(user_id, image_hash) → extraction_result` both live in Postgres (`receipt_repo.go`) — **no Redis anywhere in this stack** (confirmed 2026-08-01, `CLAUDE.md` updated). BYOK considered and rejected: bad fit for Spendos's non-technical audience, and it would move the extraction prompt/validation into the shipped APK. | 🟡 | ☑ |
 | 3.2 | **Extraction contract** | The JSON Schema for `output_config.format`: which fields, which are optional, how confidence is expressed. | 🔴 | ☐ |
 | 3.3 | **Indonesian number rules + server validation** | `Rp 1.500,00` handling, PPN 11%, service charge. Range-check against line items before returning. | 🔴 | ☐ |
-| 3.4 | **Quota + image-hash cache** | Per-user monthly cap (number needed). Redis for `hash → extraction`. | 🟢 | ☐ |
+| 3.4 | **Quota + image-hash cache** | *Reframed by 3.1: Postgres, not Redis — see ADR-0004 §3.7.* Per-user monthly cap (number still needed). | 🟢 | ☐ |
 | 3.5 | **Synchronous vs async job** | Sync + spinner is simpler; async only if measurement demands it. Affects Gin tuning — a request held for seconds is a new load profile. | 🟡 | ☐ |
 | 3.6 | **Model tier** | Default `claude-opus-5`. Stepping down is a quality/cost tradeoff — manager's call. | 🟢 | ☐ |
 

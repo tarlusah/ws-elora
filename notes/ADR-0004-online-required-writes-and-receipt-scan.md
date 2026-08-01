@@ -179,6 +179,33 @@ POST /v1/receipts/scan     multipart image → structured extraction
 
 Unchanged from ADR-0003 §3.6.
 
+### 3.7 Domain shape — everything in Postgres, no Redis
+
+*Settled in discussion item 3.1.* The `receipt` domain has no entity or repository for the
+receipt/extraction content itself — nothing about it is ever persisted (§3.3). But two smaller,
+genuinely-owned pieces of state do need a home:
+
+- **Monthly scan quota**, `(user_id, period)` unique, a `count` column. Must be durable — a
+  cost-control cap that silently resets on a cache restart defeats its own purpose.
+- **Idempotency by image hash** (§3.4), `(user_id, image_hash) → extraction_result` (JSONB),
+  unique per pair. No active expiry needed at this data volume; rows are small and low-frequency
+  given the monthly cap above.
+
+**Both live in Postgres, in `internal/receipt/repository/receipt_repo.go` — there is no Redis
+anywhere in this stack** (confirmed 2026-08-01; `CLAUDE.md` updated to match). This also makes
+the idempotency table more consistent with the codebase's existing convention than a new Redis
+dependency would have been — §3.4 already pointed at "the existing transaction idempotency-key
+pattern," which is itself a Postgres pattern.
+
+**Why not client-side / BYOK.** Considered and rejected: Spendos's users are casual, non-technical
+personal-finance users, not developers who already hold an Anthropic API key — requiring one to
+use the marquee scanning feature would be a significant adoption barrier. It would also move the
+extraction prompt and validation rules into the shipped APK, giving up the ability to fix a
+systematic misread (e.g. an Indonesian number-format bug) via server deploy instead of an app
+release. The image still passes through the server on every scan, but only transiently — it is
+never written to disk, which is what "not stored on the server" actually requires; the server's
+role is to hold the shared API key safely, not to persist the photo.
+
 ---
 
 ## 4. Consequences

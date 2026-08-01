@@ -10,12 +10,14 @@ Elora — two independent repositories, not a monorepo. Both are symlinked into
 
 ## Stack (as implemented in the two repos — do not change without discussing)
 - **Backend:** Go, Go workspace (`go.work`: `pkg/` + `internal/` + `apps/server/`), Gin router,
-  PostgreSQL via `pgx`, Redis, JWT + Google OAuth (JWKS) auth. Modular-monolith architecture —
-  see `playgrounds/elora-be-go/CLAUDE.md` for the full domain/layering rules.
+  PostgreSQL via `pgx`, JWT + Google OAuth (JWKS) auth. **No Redis** — everything, including
+  caches (e.g. idempotency keys), lives in Postgres; confirmed 2026-08-01, do not reintroduce
+  Redis without discussing. Modular-monolith architecture — see `playgrounds/elora-be-go/CLAUDE.md`
+  for the full domain/layering rules.
 - **Mobile:** Flutter (Dart), Riverpod (`flutter_riverpod` + `riverpod_annotation`) for state,
   `go_router` for navigation, `drift` for offline-first local storage, `dio` for HTTP,
   `flutter_secure_storage` for tokens. See `playgrounds/elora_spendos/CLAUDE.md`.
-- **Deploy target:** VPS (Go binary + PostgreSQL + Redis via `docker-compose`), not a managed
+- **Deploy target:** VPS (Go binary + PostgreSQL via `docker-compose`), not a managed
   serverless platform — see `playgrounds/elora-be-go/deploy/docker-compose.yml`.
 - **API contract:** `playgrounds/elora-be-go/api-documentation/*.yaml` (OpenAPI, one file per
   domain). **This same set of files is duplicated in `playgrounds/elora_spendos/api-documentation/`**
