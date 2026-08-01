@@ -434,9 +434,8 @@ The row lock serialises writes per user, so a gap can never be visible mid-fligh
 single-device product the contention is effectively zero. Side benefit: `last_seq` per user is a
 cheap "is this client current?" check.
 
-*This settles the generator question that item 1.3 was to decide. What remains for 1.3 is only
-where in the repository layer the assignment happens so that non-sync write paths cannot bypass
-it.*
+*This settles the generator question that item 1.3 was to decide. Where in the repository layer
+the assignment happens, so that non-sync write paths cannot bypass it, is settled in §2.15.*
 
 With gaps closed, mutable `server_seq` is safe under pagination: the sequence only ever
 increases and the client pages in ascending order, so a row updated mid-pull always moves
@@ -456,7 +455,7 @@ category and their device never learns. `ChangesSince` must consider all constit
   or a changelog table) are cross-domain constructs already excluded by §2.11 — a UNION view over
   five domain tables *is* sync reading other domains' tables. What remains of 1.4 is an index,
   `(user_id, server_seq)` per table, and the pagination already specified in §2.11.
-- **Item 1.6 becomes correctness-critical, not hygienic.** See §2.13.
+- **Item 1.6 becomes correctness-critical, not hygienic.** See §2.13, settled in §2.16.
 - No change history. An audit trail, if ever wanted, is built separately — consistent with §4.
 - Five near-identical `ListChangedSince` queries, one per pullable unit. This is the per-domain
   repetition cost accepted in §2.11; the conformance suite must specifically cover: tombstones
@@ -477,7 +476,7 @@ them and inherit the durability problem above. Adding a publish call later is tr
 
 ### 2.13 Hard delete is banned on synced tables
 
-*Raised by 1.2; the implementation shape remains item 1.6.*
+*Raised by 1.2; the implementation shape is settled in §2.16 (item 1.6).*
 
 Because pull reads live rows, a row removed by any path other than a tombstone becomes a
 **permanent zombie on every client** — never deleted, never re-pulled, with no error on either
@@ -605,6 +604,98 @@ Two additions for debugging and support, deliberately off the correctness path:
 
 Neither is ever read by the pull path. That is what keeps them compatible with §2.12: what was
 rejected there was a changelog as the *source* of changes, not the existence of a log.
+
+### 2.15 `server_seq` assignment lives in the repository layer
+
+*Settled in discussion item 1.3. §2.12 already decided the generator (per-user counter,
+incremented inside the write transaction); this decides where that call happens so no write
+path can bypass it.*
+
+**Decision: the repository assigns `server_seq` internally, inside its own `Create` / `Update` /
+soft-delete methods. The usecase never sets it and cannot pass it in.**
+
+A shared helper does the mechanical part:
+
+```go
+// pkg/syncseq/syncseq.go — infra only, no business logic, per pkg/ rules
+func NextSeq(ctx context.Context, userID string) (int64, error) {
+    // UPDATE user_sync_state SET last_seq = last_seq + 1 WHERE user_id = $1 RETURNING last_seq
+    // uses the tx already present on ctx, per the existing repo convention
+}
+```
+
+Each pushable domain's repository (`account`, `budget`, `transaction` — not `category`, which is
+pull-only) calls `syncseq.NextSeq` as the first step inside its own write method, before building
+the row. `entity.ServerSeq` is not a field the caller populates.
+
+**Why not in the usecase.** If assignment were an explicit call the usecase makes before invoking
+`repo.Save`, every write usecase in every domain — including ones written later (an admin tool, a
+bulk import, a cleanup job) — would have to remember to make it. That is exactly the "discipline"
+§2.11 already rejected as the enforcement mechanism for sync correctness. Putting it inside the
+repository's write methods instead of behind a parameter makes it structurally impossible to
+write a row through the repo without a `server_seq` — there is no code path that skips it, not a
+convention that can be forgotten.
+
+**Cost.** The call is duplicated across three repositories rather than centralised once. This is
+the same per-domain repetition already priced into §2.11; the conformance test suite required
+there should assert, per domain, that repeated writes for one user produce a strictly increasing
+`server_seq`.
+
+**Boundary.** This closes "a usecase forgot to call it." It does not close a write that bypasses
+the repository entirely — raw SQL, a migration, a manual `psql` fix. That is a different class of
+risk, the same one §2.13/§2.16 addresses for hard deletes below.
+
+### 2.16 Soft-delete enforcement (item 1.6)
+
+*Raised to 🔴 by §2.13: pull reads live rows, so anything that removes a row without a tombstone
+is a permanent, silent zombie on every client.* Two distinct concerns, two different answers:
+
+#### (a) Read-time filter — same shape as §2.15: default-safe, explicit escape hatch
+
+A domain's normal read methods (`List`, `Get`) always filter `deleted_at IS NULL` internally —
+this is not a parameter the caller can omit. The one caller that legitimately needs deleted rows
+is sync's own `ChangesSince` (§2.12), which uses a separately named method,
+`ListAllIncludingDeleted`, so any call site reading tombstones is visible as such in review rather
+than hidden behind a boolean flag.
+
+#### (b) Hard-delete ban — enforced in PostgreSQL, not only in Go
+
+A `BEFORE DELETE` trigger on each of `transactions`, `accounts`, `categories`, `budgets` raises an
+exception:
+
+```sql
+CREATE FUNCTION reject_hard_delete() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'hard delete banned on %; use soft delete (deleted_at)', TG_TABLE_NAME;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER no_hard_delete BEFORE DELETE ON transactions
+  FOR EACH ROW EXECUTE FUNCTION reject_hard_delete();
+-- repeated for accounts, categories, budgets
+```
+
+**Why not just remove `Delete()` from the repo interface.** The risk named in §2.13 is explicitly
+a migration, a cleanup job, or a manual fix — none of which go through the Go repository layer at
+all. Only something enforced in Postgres itself closes that gap.
+
+**Why a trigger and not `REVOKE DELETE`.** Migrations run automatically on startup through the
+same connection the app uses (`database-conventions.md`), which means the app's DB role is very
+likely the owner of these tables. Postgres table owners bypass `GRANT`/`REVOKE` entirely — revoking
+`DELETE` from the owning role has no effect. Achieving the same guarantee via privileges would need
+either role separation (a migrator role vs. a query-only app role) or `FORCE ROW LEVEL SECURITY`
+with a always-false `DELETE` policy — both heavier, and role separation is a deploy-level change
+for `@devops`, not a decision this item needs to force. A trigger needs neither: it works
+regardless of who owns the table or which role issues the statement.
+
+**Cost.** One more thing that lives in the database rather than in Go — someone reading only
+`internal/{domain}/repository/` won't see why `DELETE` fails. Document it in the migration file
+and in `.claude/skills/backend/database-conventions.md` once this repo is checked out.
+
+**Boundary.** A trigger stops accidental hard deletes from application code, migrations, and
+scripts running under normal privileges. It does not stop a superuser or someone with migration
+access from dropping the trigger itself — that is a different trust boundary than this item is
+meant to cover.
 
 ---
 
@@ -742,8 +833,8 @@ Both copies of `api-documentation/*.yaml` must be updated together, per the work
 | Lockout via refresh-token rotation during network loss | Keep old token until new one is persisted; server grace window |
 | Duplicate "Uncategorized" category | Server-side seeding on register only; the client never seeds (§2.7) |
 | **Client silently skips a record** because a lower `server_seq` committed after a higher one | Per-user counter incremented inside the write transaction; global Postgres sequence rejected (§2.12) |
-| **Zombie record** on the client after an out-of-band hard delete | Hard delete banned on all four synced tables; enforcement is item 1.6 (§2.13) |
-| **A change invisible to sync** because a write path forgot to bump `server_seq` | Assignment lives in the repository layer, not the sync usecase (item 1.3); conformance suite (§2.11) |
+| **Zombie record** on the client after an out-of-band hard delete | Hard delete banned on all four synced tables via DB trigger; enforcement is item 1.6 (§2.13, §2.16) |
+| **A change invisible to sync** because a write path forgot to bump `server_seq` | Assignment lives in the repository layer, not the sync usecase (item 1.3, §2.15); conformance suite (§2.11) |
 | **A stale device silently reverts a newer edit** | `base_seq` on every pushed record; server returns `conflict` and the client surfaces it (§2.14) |
 | **A deleted record resurrected** by a stale edit landing later | Tombstones are sticky — an update never clears `deleted_at` (§2.14) |
 | **Two budgets for one category-month**, invisible to LWW because the `id`s differ | Unique natural key `(user_id, category_id, period)`; the loser is `rejected` (§2.14) |

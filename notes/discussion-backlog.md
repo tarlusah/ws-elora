@@ -26,17 +26,17 @@ budgets have a unique natural key.
 
 ## Track 1 — Sync core (backend)
 
-**Items 1.1–1.5 are settled, so the API contract is now unblocked and Track 4 can start.**
-What remains (1.3, 1.6, 1.7, 1.8) is narrowed and none of it is wire-visible.
+**Items 1.1–1.6 are settled, so the API contract is now unblocked and Track 4 can start.**
+What remains (1.7, 1.8) is narrowed and none of it is wire-visible.
 
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
 | 1.1 | ~~**Shape of the new `sync` domain**~~ | **☑ Settled → ADR §2.11.** Thin orchestrator; both directions via domain usecases; opt-in `SyncPushable`/`SyncPullable`; value types in `pkg/synccontract`; envelope carries sync metadata, payload = existing domain DTO; `ApplyBatch` not per-record; no entity/repository; conformance suite required. | 🔴 | ☑ |
 | 1.2 | ~~**Where changes come from**~~ | **☑ Settled → ADR §2.12 + §2.13.** `ChangesSince` reads the domain's own entity rows; `server_seq` authoritative on the row. No changelog, no event/projection feed — it would either give `sync` a cross-domain table (contradicting 1.1) or fragment into 5 duplicate tables. `server_seq` from a per-user counter incremented **inside the write transaction**; global Postgres sequence rejected (commit-order gap silently skips records). Reversible: the wire envelope is identical either way. | 🔴 | ☑ |
-| 1.3 | **`server_seq`: assignment point** | *Generator decided by 1.2: per-user counter, in-transaction.* What remains: where in the repository layer the assignment happens so no non-sync write path can bypass it. | 🟡 | ☐ |
+| 1.3 | ~~**`server_seq`: assignment point**~~ | **☑ Settled → ADR §2.15.** Assignment happens inside each pushable domain's repository (`Create`/`Update`/soft-delete), via a shared `pkg/syncseq` helper — not as a parameter the usecase passes in. Closes "a usecase forgot to call it" structurally, since no repo write path exposes `server_seq` as settable input. Does not close raw-SQL/migration bypass — see 1.6. | 🟡 | ☑ |
 | 1.4 | ~~**Read model for `GET /sync/changes`**~~ | **☑ Collapsed by 1.1 + 1.2.** Both candidates were cross-domain constructs already excluded — a `UNION ALL` view over 5 domain tables *is* sync reading other domains' tables. What's left is not a discussion: index `(user_id, server_seq)` per table; pagination per ADR §2.11 (merge-sort, single `int64` cursor). | 🟡 | ☑ |
 | 1.5 | ~~**Push semantics**~~ | **☑ Settled → ADR §2.14.** Conflict is real and is a *staleness* problem, not a concurrency one — device keying, ingest timestamps, and advisory locks were each tested and moved none of the three cases. Every pushed record carries `base_seq`; `row.server_seq > base_seq` = stale. Policy: **detect, apply under LWW, flag** — `conflict` means the write **did** land. Batch is **per record** (domain may group what must land together); a rejected record never blocks the rest. Plus two defect fixes: tombstones are sticky, budgets get natural key `(user_id, category_id, period)`. Plus sync log + `ingested_at`, operational only. | 🔴 | ☑ |
-| 1.6 | **Soft-delete enforcement** | `deleted_at IS NULL` touches every read in 4 domains. Shared helper, base repo, or discipline? **Raised to 🔴 by 1.2** — the code is simple, the consequence is not: pull reads live rows, so one hard delete anywhere is a permanent zombie record on the client, with no error on either side (ADR §2.13). | 🔴 | ☐ |
+| 1.6 | ~~**Soft-delete enforcement**~~ | **☑ Settled → ADR §2.16.** Two separate answers: (a) read-time filter — domain `List`/`Get` always exclude `deleted_at`, sync's `ChangesSince` uses a separately named `ListAllIncludingDeleted`; (b) hard-delete ban — a `BEFORE DELETE` Postgres trigger on all 4 tables, not `REVOKE DELETE` (the app role is almost certainly table owner, so revoke has no effect on it). | 🔴 | ☑ |
 | 1.7 | **Client-generated UUIDv7** | Who validates the format? What happens on collision, or an ID already owned by another user? *Narrowed by 1.1: applies only to pushable units — categories keep server-generated IDs.* | 🟡 | ☐ |
 | 1.8 | **Fate of existing per-domain CRUD endpoints** | Keep them (future web client) or route everything through sync? *Constrained by 1.1: if kept they share the same DTO and must accept a client-supplied ID — two ID policies would be worse than either.* | 🟡 | ☐ |
 
