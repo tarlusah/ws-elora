@@ -6,7 +6,8 @@
   project stands today)
 - **Architecture decision:** `notes/ADR-0004-online-required-writes.md` — the authoritative
   record for *why* each choice was made. This PRD states *what* to build.
-- **Status:** awaiting manager approval → then `@pm` writes `user-stories.md`, then `@architect`
+- **Status:** ✅ Approved 2026-08-02 (all §7 open decisions confirmed) → next: `@pm` writes
+  `user-stories.md`, then `@architect`
 
 **Revision note:** this PRD originally described full bidirectional offline-first sync (see
 `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`). On 2026-08-01 the manager stepped that
@@ -142,7 +143,10 @@ and rewritten again later, unaffected by this pivot.
 | # | Decision | Status |
 |---|---|---|
 | 1 | ~~Refresh-token / session TTL~~ | **☑ Confirmed 2026-08-02 — 60 days, sliding.** |
-| 2 | Hard delete vs. soft delete | ☐ Open. Default: hard delete (no longer forced by sync; free choice — see ADR-0004 §4) |
+| 2 | ~~Hard delete vs. soft delete~~ | **☑ Confirmed 2026-08-02 — hard delete.** Default accepted (no longer forced by sync; free choice — see ADR-0004 §4). |
+
+**All open decisions confirmed 2026-08-02 — this PRD is approved.** Next: `@pm` writes
+`user-stories.md`, then `@architect` starts the contract (backlog item 5.1).
 
 ---
 

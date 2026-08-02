@@ -154,15 +154,13 @@ disposable and derived, never authoritative.
 
 ## 4. Open items requiring manager confirmation
 
-**Confirmed 2026-08-02:**
+**All confirmed 2026-08-02:**
 
 1. ~~**Refresh-token / session TTL.**~~ **60 days, sliding.** Now just "how long before the user
    must log in again" — materially lower-stakes than ADR-0003's "offline window" framing.
-
-No longer forced by this ADR (now a free, independent choice if it ever comes up):
-
-2. Hard delete vs. soft delete. Default here is hard delete; soft delete is only worth
-   reconsidering if a separate "undo delete" UX is wanted.
+2. ~~**Hard delete vs. soft delete.**~~ **Hard delete** — accepted the default. No longer forced
+   by this ADR (was a free, independent choice); soft delete is only worth reconsidering if a
+   separate "undo delete" UX is wanted later.
 
 ---
 
