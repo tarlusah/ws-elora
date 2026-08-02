@@ -1,33 +1,33 @@
-# PRD — Online-required writes + LLM receipt scanning
+# PRD — Online-required writes
 
 - **Cycle:** next feature/change cycle
 - **Date:** 2026-08-01 (revised — see revision note below)
 - **Baseline:** `shared/context/PRD.md` (consolidated status — read that first for where the
   project stands today)
-- **Architecture decision:** `notes/ADR-0004-online-required-writes-and-receipt-scan.md` — the
-  authoritative record for *why* each choice was made. This PRD states *what* to build.
+- **Architecture decision:** `notes/ADR-0004-online-required-writes.md` — the authoritative
+  record for *why* each choice was made. This PRD states *what* to build.
 - **Status:** awaiting manager approval → then `@pm` writes `user-stories.md`, then `@architect`
 
 **Revision note:** this PRD originally described full bidirectional offline-first sync (see
 `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`). On 2026-08-01 the manager stepped that
 back to an online-required-write model before any production user exists — implementation cost
-was judged too high for the product's current stage. This revision reflects that decision. The
-receipt-scanning half is essentially unchanged.
+was judged too high for the product's current stage. This revision reflects that decision.
+
+**2026-08-02 — receipt scanning cut from scope.** This PRD originally bundled LLM receipt
+scanning alongside the online-required-writes change, because both touched the same data paths
+(see ADR-0004's prior revision, and `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` §3
+for the original design). The manager cut it entirely — not deferred, not split out for later,
+just removed from the plan. This PRD now covers online-required writes only.
 
 ---
 
 ## 1. Summary
 
-Two changes ship in one cycle because they touch the same data paths:
-
-1. **Writes require a live connection; reads work offline from a local cache.** Spendos already
-   stores locally (Drift). That cache keeps its role for fast, offline-capable *reading* —
-   accounts, transactions, budgets, categories, dashboard aggregates all display the last data
-   fetched from the server. Creating, editing, or deleting anything requires connectivity at that
-   moment. There is no local write queue, no sync protocol, no conflict resolution.
-2. **Receipt scanning via LLM.** The user photographs a receipt; a server-side model extracts
-   merchant, total, date, and line items; the result lands in the existing Review queue as a
-   suggestion the user confirms. Like every other write, this requires connectivity.
+**Writes require a live connection; reads work offline from a local cache.** Spendos already
+stores locally (Drift). That cache keeps its role for fast, offline-capable *reading* — accounts,
+transactions, budgets, categories, dashboard aggregates all display the last data fetched from the
+server. Creating, editing, or deleting anything requires connectivity at that moment. There is no
+local write queue, no sync protocol, no conflict resolution.
 
 There is **no production data and no backward-compatibility requirement**, so this cycle uses
 plain, server-authoritative CRUD rather than the sync protocol previously scoped.
@@ -41,10 +41,8 @@ plain, server-authoritative CRUD rather than the sync protocol previously scoped
 | G1 | The app is usable offline for **reading** | Viewing Capture history, Review, History, Dashboard, and Budget all work with the network off, showing the last-fetched data |
 | G2 | Writing is honest about connectivity | Every create/edit/delete action fails immediately and explicitly ("needs connection") when offline — never silently queued, never silently lost |
 | G3 | Data survives a lost phone | A fresh install + login restores every account, category, budget, and transaction from the server |
-| G4 | Receipt capture is faster than typing | Photo → confirmed transaction in fewer steps than manual entry |
-| G5 | Scanning never blocks the user on the model | The user can always type the amount manually instead of waiting for extraction |
 
-**Dropped from the previous cycle's goals** (see ADR-0004 §4): "fully usable offline including
+**Dropped from the previous cycle's goals** (see ADR-0004 §3): "fully usable offline including
 writes," "no user data ever lost via a local write queue," and "sync status indicator / rejected
 records visible" — these depended on the offline-write mechanism this cycle no longer builds.
 
@@ -54,10 +52,8 @@ records visible" — these depended on the offline-write mechanism this cycle no
   This is the one that changed — see ADR-0004.
 - **Multi-device concurrent use.** One account, sequential device use, as before.
 - **Anonymous / no-account mode.** Login is required.
-- **Receipt images syncing across devices.** Images are device-local, extracted then discarded
-  server-side.
-- **Offline receipt extraction / on-device models.** Extraction requires connectivity — no longer
-  a special case, since everything does now.
+- **Receipt scanning.** Cut from scope entirely (2026-08-02) — see the revision note above. Not
+  part of this or any currently planned cycle.
 - **Web client.** Server dashboard endpoints are retained for it, but it is not built here.
 
 ---
@@ -106,72 +102,11 @@ records visible" — these depended on the offline-write mechanism this cycle no
 
 Transactions (incl. `000` placeholders, review state, splits), accounts, budgets, categories, and
 user profile are all fetched and cached for offline reading. Dashboard aggregates are computed
-locally from the cache, as before. Not cached: sessions/tokens, receipt images.
+locally from the cache, as before. Not cached: sessions/tokens.
 
 ---
 
-## 5. Scope — LLM receipt scanning
-
-### 5.1 User flow
-
-1. From Capture, the user taps *scan receipt* and takes or picks a photo.
-2. **This requires connectivity**, the same as any other write now — no offline fallback queue.
-3. The image uploads; the server extracts merchant, total, date, currency, line items, and a
-   suggested category.
-4. A draft transaction is created **with those fields already populated**, landing in the
-   existing Review queue as a suggestion.
-5. The user can always type the amount manually instead of waiting for extraction — the
-   transaction is never blocked on the model, only on connectivity, same as everything else.
-6. **The user always confirms. Nothing is auto-committed.**
-
-This still reuses the product's existing "capture fast, resolve later" shape for the *model's*
-role — the user is never blocked waiting on the model — but capture itself now requires
-connectivity like every other write, so there is no separate offline-queue behavior to design for
-scanning specifically.
-
-### 5.2 Accuracy requirements (Indonesian receipts) — unchanged
-
-- **Number format.** Thousands separator `.`, decimal separator `,` (`Rp 1.500,00`). Handled
-  explicitly in the prompt and validated server-side.
-- **PPN 11% and service charge** lines must not be mistaken for the total.
-- The server **range-checks** the extracted total against recognised line items before returning.
-- Low-confidence extractions are marked as such, not presented as certain.
-
-### 5.3 What gets built — backend
-
-| Item | Detail |
-|---|---|
-| `POST /v1/receipts/scan` | Multipart image in, structured extraction out |
-| Model call | `claude-opus-5` via `github.com/anthropics/anthropic-sdk-go`, server-side only |
-| Structured output | JSON Schema via `output_config.format` — the backend does not parse free-form text |
-| Prompt caching | Extraction rules prompt is stable and exceeds the 512-token minimum; cache reads cost ~0.1× |
-| Idempotency | Keyed by image hash — the same receipt scanned twice must not incur a second model call |
-| Rate limiting | Per-user monthly scan cap, required in v1 — number pending manager decision |
-| Image retention | Extract, then discard server-side. Nothing persisted. |
-| Sizing | `max_tokens` must account for thinking + response together (thinking is on by default on `claude-opus-5`) |
-
-**API key never ships in the app.** This is why extraction is server-side, without exception.
-
-### 5.4 What gets built — frontend
-
-- Camera / gallery capture, client-side compression.
-- Local image store, never synced.
-- Explicit "needs connection" state when offline — the scan action is simply unavailable, not
-  queued.
-- Populated-draft confirmation UI inside the existing Review flow.
-
-### 5.5 Cost — unchanged
-
-At `claude-opus-5` rates, roughly **$0.02–0.04 per scan** depending on image resolution. At 100
-scans/month that is roughly $2–4 per user per month. The monthly cap and image-hash cache are v1
-scope, not deferred. Stepping down to `claude-sonnet-5` or `claude-haiku-4-5` is the manager's
-call — see §8.
-
----
-
-## 6. Acceptance criteria
-
-Online-required writes:
+## 5. Acceptance criteria
 
 - [ ] With the network enabled, a user can create, edit, delete, review, split, and categorise
       transactions; manage accounts, categories, and budgets.
@@ -183,29 +118,18 @@ Online-required writes:
 - [ ] Logging in as a different user on the same device replaces the cache — no data mixing.
 - [ ] Refresh-token expiry produces a "log in again" state without corrupting the local cache.
 
-Receipt scanning:
-
-- [ ] Attempting to scan while offline shows an explicit "needs connection" state.
-- [ ] Extraction never auto-commits; the user confirms every value.
-- [ ] `Rp 1.500,00` is read as 1500, not 150000 or 1.5.
-- [ ] PPN and service charge are not mistaken for the total.
-- [ ] The same image scanned twice triggers only one model call.
-- [ ] Exceeding the monthly cap produces a clear message, not a silent failure.
-- [ ] No API key is present in the built app artifact.
-
 ---
 
-## 7. Dependencies and sequencing
+## 6. Dependencies and sequencing
 
-1. Manager approves this PRD and answers §8.
+1. Manager approves this PRD and answers §7.
 2. `@pm` writes `user-stories.md`.
-3. `@architect` updates **both** copies of `api-documentation/*.yaml` — the receipt-scan endpoint,
-   plus whatever schema changes fall out of dropping client-generated ids and tombstones. The two
-   copies must not drift.
+3. `@architect` updates **both** copies of `api-documentation/*.yaml` — whatever schema changes
+   fall out of dropping client-generated ids and tombstones. The two copies must not drift.
 4. `@backend` and `@frontend` run in parallel against the agreed contract, each in its own
    worktree. The frontend uses contract mocks until the backend endpoint lands.
-5. `@qa` tests both surfaces: the online-write happy path, the offline "needs connection" gate,
-   and the receipt-scan flow. No conflict/rejected-record matrix — that mechanism doesn't exist.
+5. `@qa` tests both surfaces: the online-write happy path and the offline "needs connection" gate.
+   No conflict/rejected-record matrix — that mechanism doesn't exist.
 6. Manager review → `@devops` deploy.
 
 **Sequencing note:** Budget is a clean slate on the frontend and should be built once — not now
@@ -213,25 +137,25 @@ and rewritten again later, unaffected by this pivot.
 
 ---
 
-## 8. Open decisions blocking `@architect`
+## 7. Open decisions blocking `@architect`
 
 | # | Decision | Default if unanswered |
 |---|---|---|
 | 1 | Refresh-token / session TTL | 60 days, sliding (carried over from ADR-0003; now lower-stakes) |
-| 2 | Model tier for extraction | `claude-opus-5` |
-| 3 | Per-user monthly scan cap | — none; a number is required |
-| 4 | Hard delete vs. soft delete | Hard delete (no longer forced by sync; free choice — see ADR-0004 §5) |
+| 2 | Hard delete vs. soft delete | Hard delete (no longer forced by sync; free choice — see ADR-0004 §4) |
 
 ---
 
-## 9. Notes for whoever picks this up
+## 8. Notes for whoever picks this up
 
 - The remote GitHub copies of both repos are roughly 1–2 weeks behind what the baseline PRD
   describes (backend last pushed 2026-05-09, frontend 2026-05-02, versus status documents dated
   2026-05-15/16). Push local work before relying on the remote as the source of truth.
 - `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` remains as historical record of the
   fuller offline-first design. It is not wrong — it was superseded for cost reasons at the
-  product's current pre-production stage, and remains available to revisit in a future cycle.
+  product's current pre-production stage, and remains available to revisit in a future cycle. Its
+  §3 (receipt scanning) is historical only — that feature is cut, not deferred (see the revision
+  note above).
 - Field names and details (e.g. whether system categories can be renamed by users) were derived
   from the domain list in `shared/context/PRD.md`, not from the live schema. They must be
   verified against the actual code before entering the API contract.

@@ -1,23 +1,29 @@
-# Discussion backlog — offline-first sync + receipt scanning
+# Discussion backlog — offline-first sync
 
-**2026-08-01 — `ADR-0004-online-required-writes-and-receipt-scan.md` superseded the offline-sync
-scope of this backlog.** The manager stepped back to an online-required-write model before any
-production user exists — implementation cost was judged too high for the product's current
-stage. Tracks 1, 2, and 4 are now mostly **superseded**, marked below with the reason; the
-settled reasoning is kept, not deleted, since the design itself wasn't wrong. Track 3 (receipt
-scanning) is essentially unaffected and now lives in ADR-0004 §3. Track 5 shrinks a lot — the
-contract is now standard CRUD + one receipt-scan endpoint, not a sync protocol.
+**2026-08-01 — `ADR-0004-online-required-writes.md` superseded the offline-sync scope of this
+backlog.** The manager stepped back to an online-required-write model before any production user
+exists — implementation cost was judged too high for the product's current stage. Tracks 1, 2,
+and 4 are now mostly **superseded**, marked below with the reason; the settled reasoning is kept,
+not deleted, since the design itself wasn't wrong. Track 5 shrinks a lot — the contract is now
+standard CRUD, not a sync protocol.
+
+**2026-08-02 — Track 3 (receipt scanning) removed.** The manager cut receipt scanning from
+product scope entirely — not deferred, not tracked elsewhere, just no longer a planned feature.
+The track's discussion items are removed from this backlog rather than kept as superseded, since
+there is no successor decision or document carrying the topic forward. If the feature is ever
+reconsidered, the prior design lives in `notes/ADR-0003-offline-first-sync-and-receipt-scan.md`
+§3 and in this file's git history.
 
 Working list for the manager and the architect. Ordered by dependency: items inside a track
-should be settled in order; tracks 1–3 can run in parallel.
+should be settled in order; tracks 1–2 can run in parallel.
 
 **Weight:** 🔴 deep design discussion · 🟡 medium · 🟢 quick decision (mostly manager's call)
 **Status:** ☐ open · ☑ settled (link the ADR section or note when closing) · 🚫 superseded
 (no longer applicable — see note)
 
-Context: `notes/ADR-0004-online-required-writes-and-receipt-scan.md` (current) and
+Context: `notes/ADR-0004-online-required-writes.md` (current) and
 `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` (superseded for sync, historical
-reference for the reasoning trail). `shared/context/PRD-offline-first-and-receipt-scan.md` is
+reference for the reasoning trail). `shared/context/PRD-online-required-writes.md` is
 being updated to match ADR-0004.
 Architecture rules in play: `.claude/skills/backend/*.md`.
 
@@ -59,22 +65,6 @@ across the board.
 | 2.3 | ~~**Session soft-limit (max 10) vs long-offline device**~~ | Was: an evicted session must land in the push-first path, never the clean-install path. **Superseded by ADR-0004 §2.4 — eviction is just "log in again," identical to any other token expiry; there's no unsynced local data to protect.** | 🟡 | 🚫 |
 | 2.4 | ~~**Three login cases**~~ | Was: clean install / same user with local data / different user, and how much the server needs to know. **Superseded by ADR-0004 §2.3 — login collapses to one case: authenticate, fetch from server, populate cache.** | 🔴 | 🚫 |
 
-## Track 3 — Receipt scanning
-
-Fully independent of Tracks 1–2. Can be discussed or built at any time. **Essentially unaffected
-by the 2026-08-01 ADR-0004 pivot** — now lives in ADR-0004 §3 instead of ADR-0003 §3, with one
-flow simplification (no offline scan queue, since nothing is offline-capable for writes anymore).
-All items below are still open exactly as before.
-
-| # | Topic | What it decides | Weight | Status |
-|---|---|---|---|---|
-| 3.1 | ~~**Domain shape**~~ | **☑ Settled → ADR-0004 §3.7.** No entity/repo for receipt content itself (nothing persisted). Quota `(user_id, period) → count` and idempotency `(user_id, image_hash) → extraction_result` both live in Postgres (`receipt_repo.go`) — **no Redis anywhere in this stack** (confirmed 2026-08-01, `CLAUDE.md` updated). BYOK considered and rejected: bad fit for Spendos's non-technical audience, and it would move the extraction prompt/validation into the shipped APK. | 🟡 | ☑ |
-| 3.2 | **Extraction contract** | The JSON Schema for `output_config.format`: which fields, which are optional, how confidence is expressed. | 🔴 | ☐ |
-| 3.3 | **Indonesian number rules + server validation** | `Rp 1.500,00` handling, PPN 11%, service charge. Range-check against line items before returning. | 🔴 | ☐ |
-| 3.4 | **Quota + image-hash cache** | *Reframed by 3.1: Postgres, not Redis — see ADR-0004 §3.7.* Per-user monthly cap (number still needed). | 🟢 | ☐ |
-| 3.5 | **Synchronous vs async job** | Sync + spinner is simpler; async only if measurement demands it. Affects Gin tuning — a request held for seconds is a new load profile. | 🟡 | ☐ |
-| 3.6 | **Model tier** | Default `claude-opus-5`. Stepping down is a quality/cost tradeoff — manager's call. | 🟢 | ☐ |
-
 ## Track 4 — Frontend
 
 **Reframed 2026-08-01 by ADR-0004 §2.5.** No bidirectional sync engine to build — what's needed
@@ -92,14 +82,15 @@ is a read-cache refresh routine plus a connectivity gate in front of writes (ADR
 
 ## Track 5 — Contract & process
 
-Downstream of Tracks 1–3. **Scope shrank a lot on 2026-08-01** — the contract is now standard
-per-domain CRUD (mostly already exists) plus one new receipt-scan endpoint, not a sync protocol.
+Downstream of Tracks 1–2. **Scope shrank a lot on 2026-08-01, and further on 2026-08-02** — the
+contract is now standard per-domain CRUD (mostly already exists), not a sync protocol, and there
+is no receipt-scan endpoint since that feature was cut.
 
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
-| 5.1 | **OpenAPI changes** | *Reframed by ADR-0004: no sync endpoints.* Just `POST /v1/receipts/scan`, plus whatever schema/CRUD adjustments fall out of dropping client-generated ids and tombstones (§2.2). **Both copies** must move together. | 🟢 | ☐ |
+| 5.1 | **OpenAPI changes** | *Reframed by ADR-0004: no sync endpoints, no receipt-scan endpoint.* Whatever schema/CRUD adjustments fall out of dropping client-generated ids and tombstones (§2.2). **Both copies** must move together. | 🟢 | ☐ |
 | 5.2 | **Migrations** | *Reframed: no `server_seq`/`deleted_at` columns to add for sync purposes.* Append-only per house rule regardless — new files, never edit existing ones, `.up` + `.down` each. | 🟢 | ☐ |
-| 5.3 | ~~**QA matrix**~~ | Was: offline → sync → conflict → resolve, plus three login cases and rejected-record path. **Superseded by ADR-0004 — replaced by a much smaller matrix: online-write happy path, "needs connection" gate when offline, and the receipt-scan flow.** | 🟡 | 🚫 |
+| 5.3 | ~~**QA matrix**~~ | Was: offline → sync → conflict → resolve, plus three login cases and rejected-record path. **Superseded by ADR-0004 — replaced by a much smaller matrix: online-write happy path and the "needs connection" gate when offline.** | 🟡 | 🚫 |
 | 5.4 | **Work sequencing** | What runs in parallel, in which worktree, and where the merge points are. Unaffected by the pivot, still open. | 🟡 | ☐ |
 
 ---

@@ -1,5 +1,13 @@
 # Resume prompts
 
+**⚠️ Stale as of 2026-08-02.** Written before ADR-0004 (2026-08-01) stepped the project back from
+full bidirectional sync to online-required writes, and before the manager cut LLM receipt
+scanning from scope entirely (2026-08-02). The prompts below still describe the old
+offline-first-sync + receipt-scanning shape of the work — do not paste them into a fresh session
+as-is. Current state: `shared/context/PRD.md` §4–§6, `notes/ADR-0004-online-required-writes.md`,
+`shared/context/PRD-online-required-writes.md`, `notes/discussion-backlog.md`. Kept here
+unedited as a historical record rather than rewritten to match current scope.
+
 Two prompts, because the work has changed shape. Track 1's core is settled, so the next step is
 either **more design discussion** (prompt A) or **writing the contract** (prompt B).
 

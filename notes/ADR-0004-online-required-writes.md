@@ -1,16 +1,20 @@
-# ADR 0004 — Online-required writes (no offline sync) + LLM receipt scanning
+# ADR 0004 — Online-required writes (no offline sync)
 
 - **Status:** Accepted
 - **Date:** 2026-08-01
 - **Decided by:** Manager (human)
 - **Scope:** Both repos — `elora-be-go` and `elora_spendos`
-- **Destination:** copy to `elora-be-go/docs/decisions/0004-online-required-writes-and-receipt-scan.md`
+- **Destination:** copy to `elora-be-go/docs/decisions/0004-online-required-writes.md`
   once that repo is checked out. This workspace clone has no access to the `playgrounds/*`
   repos, so the record lives here first.
 - **Supersedes:** the offline-sync portion of
   `notes/ADR-0003-offline-first-sync-and-receipt-scan.md` (§2.1–§2.14 and the login-case
-  content in §2.9). The receipt-scanning decision (§3 there) is carried forward and restated
-  here, with one flow simplification — see §6.
+  content in §2.9).
+- **Note on receipt scanning:** ADR-0003 §3 and an earlier revision of this ADR carried an LLM
+  receipt-scanning decision alongside this one, because the two changes touched the same data
+  paths. The manager cut receipt scanning from scope entirely on 2026-08-02 — it is no longer a
+  planned feature, not merely deferred. That content has been removed from this document; see
+  git history for the prior text if it's ever reconsidered.
 
 ---
 
@@ -122,93 +126,7 @@ disposable and derived, never authoritative.
 
 ---
 
-## 3. LLM receipt scanning
-
-Carried forward from ADR-0003 §3, unchanged except for §3.1's flow (no more offline scan queue,
-consistent with §2.1 above — everything requires connectivity now, so scanning is no longer a
-special case).
-
-### 3.1 User flow
-
-1. User captures or picks a receipt image from Capture.
-2. Image is compressed and uploaded to the server — this requires connectivity, same as any other
-   write now.
-3. The server calls the model and returns structured extraction.
-4. A transaction draft is created **with the extracted fields already populated**, landing in the
-   existing Review queue as a suggestion.
-5. The user confirms. Nothing is auto-committed.
-
-If the device is offline, the scan action is simply unavailable — the same "needs connection"
-gate as every other write (§2.1), not a queued draft that resolves later. This is the one
-substantive change from ADR-0003 §3.1, which had scanning fall back to a local `scan_pending`
-queue processed on reconnect; that fallback no longer has anything to be an exception to.
-
-### 3.2 Accuracy requirements (Indonesian receipts) — unchanged
-
-- Thousands separator `.`, decimal separator `,` (`Rp 1.500,00`) — the most likely source of a
-  100× or 1000× error, handled explicitly in the prompt and validated server-side.
-- PPN 11% and service charge lines must not be mistaken for the total.
-- The server range-checks the extracted total against recognised line items before returning.
-- Low-confidence extractions are marked as such, never presented as certain.
-- Extraction is always a suggestion; the user always confirms. Nothing is auto-committed.
-
-### 3.3 Images are never synced — unchanged, restated more simply
-
-Still local-only, discarded server-side after extraction. ADR-0003's rationale ("would otherwise
-contaminate a clean row-sync design") no longer applies — there is no row-sync design to
-contaminate — but the simpler reason still holds: most users never revisit a receipt photo, so
-building cross-device image transport for it isn't worth it.
-
-### 3.4 The model call runs server-side — unchanged
-
-`claude-opus-5` via `github.com/anthropics/anthropic-sdk-go`, structured output via
-`output_config.format`, vision input, prompt caching on the extraction system prompt, idempotency
-by image hash, synchronous request with a spinner. API key never ships in the app. See ADR-0003
-§3.4 for the full detail — none of it changes here.
-
-### 3.5 Cost — unchanged
-
-Roughly $0.02–0.04 per scan at `claude-opus-5` rates; a per-user monthly cap and image-hash cache
-are v1 requirements, not deferred. See ADR-0003 §3.5.
-
-### 3.6 Contract impact
-
-```
-POST /v1/receipts/scan     multipart image → structured extraction
-```
-
-Unchanged from ADR-0003 §3.6.
-
-### 3.7 Domain shape — everything in Postgres, no Redis
-
-*Settled in discussion item 3.1.* The `receipt` domain has no entity or repository for the
-receipt/extraction content itself — nothing about it is ever persisted (§3.3). But two smaller,
-genuinely-owned pieces of state do need a home:
-
-- **Monthly scan quota**, `(user_id, period)` unique, a `count` column. Must be durable — a
-  cost-control cap that silently resets on a cache restart defeats its own purpose.
-- **Idempotency by image hash** (§3.4), `(user_id, image_hash) → extraction_result` (JSONB),
-  unique per pair. No active expiry needed at this data volume; rows are small and low-frequency
-  given the monthly cap above.
-
-**Both live in Postgres, in `internal/receipt/repository/receipt_repo.go` — there is no Redis
-anywhere in this stack** (confirmed 2026-08-01; `CLAUDE.md` updated to match). This also makes
-the idempotency table more consistent with the codebase's existing convention than a new Redis
-dependency would have been — §3.4 already pointed at "the existing transaction idempotency-key
-pattern," which is itself a Postgres pattern.
-
-**Why not client-side / BYOK.** Considered and rejected: Spendos's users are casual, non-technical
-personal-finance users, not developers who already hold an Anthropic API key — requiring one to
-use the marquee scanning feature would be a significant adoption barrier. It would also move the
-extraction prompt and validation rules into the shipped APK, giving up the ability to fix a
-systematic misread (e.g. an Indonesian number-format bug) via server deploy instead of an app
-release. The image still passes through the server on every scan, but only transiently — it is
-never written to disk, which is what "not stored on the server" actually requires; the server's
-role is to hold the shared API key safely, not to persist the photo.
-
----
-
-## 4. Consequences
+## 3. Consequences
 
 ### Positive
 
@@ -222,8 +140,8 @@ role is to hold the shared API key safely, not to persist the photo.
 
 ### Negative / accepted costs
 
-- **The product can no longer capture a transaction — typed or receipt-scanned — without a live
-  connection at that moment.** This is a real capability regression from the offline-first vision
+- **The product can no longer capture a transaction without a live connection at that moment.**
+  This is a real capability regression from the offline-first vision
   ADR-0003 described, accepted explicitly because there is no production user base yet to be
   affected by it, and because the cost of building it now was judged higher than the value of
   having it before any user exists.
@@ -233,33 +151,30 @@ role is to hold the shared API key safely, not to persist the photo.
 
 ---
 
-## 5. Open items requiring manager confirmation
+## 4. Open items requiring manager confirmation
 
 Carried over from ADR-0003, still unanswered:
 
 1. **Refresh-token / session TTL.** Now just "how long before the user must log in again" —
    materially lower-stakes than ADR-0003's "offline window" framing, but still a number to pick.
-2. **Model tier for receipt scanning.** Default `claude-opus-5`. Stepping down to `claude-sonnet-5`
-   or `claude-haiku-4-5` is a quality/cost tradeoff — manager's call.
-3. **Per-user monthly scan cap.** A number is needed.
 
 No longer forced by this ADR (now a free, independent choice if it ever comes up):
 
-4. Hard delete vs. soft delete. Default here is hard delete; soft delete is only worth
+2. Hard delete vs. soft delete. Default here is hard delete; soft delete is only worth
    reconsidering if a separate "undo delete" UX is wanted.
 
 ---
 
-## 6. Supersedes
+## 5. Supersedes
 
 - **`notes/ADR-0003-offline-first-sync-and-receipt-scan.md` §2.1–§2.14** (offline level, sync
   protocol, schema for sync, sync domain architecture, pull source, push semantics, soft-delete
   enforcement, `server_seq` assignment) and the login-case content in §2.9 — **closed**. Reason:
   implementation cost judged too high for the product's pre-production stage; the design itself
   was not wrong, and remains available to revisit in a future cycle.
-- **ADR-0003 §3** (receipt scanning) — carried forward into this ADR's §3 with one simplification
-  (no offline scan queue). ADR-0003 §3 is not wrong, just consolidated here so there is one
-  authoritative document going forward.
+- **ADR-0003 §3** (receipt scanning) and this ADR's own former §3 (which had carried it forward)
+  — **cut from scope**, not carried forward. See the note at the top of this document.
 - **Discussion backlog items 1.1–1.8, 2.2, 2.3, 2.4, 4.1, 4.2, 4.3, 4.5, 4.6** — superseded, no
-  longer applicable. See `notes/discussion-backlog.md` for the per-item note.
+  longer applicable. Backlog Track 3 (receipt scanning) — removed, see
+  `notes/discussion-backlog.md`.
 - ADR-0001's closure by ADR-0003 is untouched — this ADR does not reopen it.
