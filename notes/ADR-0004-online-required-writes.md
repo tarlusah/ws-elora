@@ -104,9 +104,10 @@ disposable and derived, never authoritative.
 - **Session eviction (soft-limit 10)** no longer needs the push-first handling ADR-0003 §2.9
   required — an evicted session just means "log in again," identical to any other token expiry,
   because there is no unsynced local data at risk of being orphaned.
-- **Refresh-token rotation + grace window** is still worth having, to avoid spurious logouts on a
-  transient network blip during rotation — but as an ordinary UX nicety, not the correctness
-  requirement it was when unsynced writes hung in the balance.
+- **Refresh-token rotation + grace window: confirmed 2026-08-02, build as described.** Worth
+  having, to avoid spurious logouts on a transient network blip during rotation — but as an
+  ordinary UX nicety, not the correctness requirement it was when unsynced writes hung in the
+  balance. Not urgent, no specific grace-window number beyond that.
 
 ### 2.5 Frontend
 
