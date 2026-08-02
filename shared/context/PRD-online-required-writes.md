@@ -68,7 +68,7 @@ records visible" — these depended on the offline-write mechanism this cycle no
   connection**. Attempting it offline shows an explicit "needs connection" message immediately —
   the action does not happen and nothing is queued to happen later.
 - Session length (refresh-token TTL) is a normal "how long before you must log in again" — not an
-  offline-window promise. Value pending manager confirmation (§8).
+  offline-window promise. **Confirmed: 60 days, sliding** (§7).
 - Logging in as a different user on the same device simply replaces the cached data — the
   previous user's cache is cleared before the new user's data is fetched.
 
@@ -83,7 +83,7 @@ records visible" — these depended on the offline-write mechanism this cycle no
 | No `server_seq` | No pull cursor, no push staleness check — neither concept applies without a sync protocol |
 | `default_account_id` on user | Replaces the per-account `is_default` flag (avoids a two-record atomic update) — unaffected by this pivot, still worth doing |
 | `/me` endpoint | Completes the Profile placeholders noted in the baseline PRD — unaffected by this pivot |
-| Auth | Refresh-token TTL is still a decision to make (§8); rotation + grace window is a nice-to-have against spurious logouts, not a correctness requirement anymore |
+| Auth | Refresh-token TTL confirmed at 60 days, sliding (§7); rotation + grace window is a nice-to-have against spurious logouts, not a correctness requirement anymore |
 
 ### 4.3 What gets built — frontend (`elora_spendos`)
 
@@ -139,10 +139,10 @@ and rewritten again later, unaffected by this pivot.
 
 ## 7. Open decisions blocking `@architect`
 
-| # | Decision | Default if unanswered |
+| # | Decision | Status |
 |---|---|---|
-| 1 | Refresh-token / session TTL | 60 days, sliding (carried over from ADR-0003; now lower-stakes) |
-| 2 | Hard delete vs. soft delete | Hard delete (no longer forced by sync; free choice — see ADR-0004 §4) |
+| 1 | ~~Refresh-token / session TTL~~ | **☑ Confirmed 2026-08-02 — 60 days, sliding.** |
+| 2 | Hard delete vs. soft delete | ☐ Open. Default: hard delete (no longer forced by sync; free choice — see ADR-0004 §4) |
 
 ---
 

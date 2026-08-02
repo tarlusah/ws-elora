@@ -97,10 +97,10 @@ disposable and derived, never authoritative.
 
 ### 2.4 Auth and session
 
-- **Refresh-token TTL is still an open decision** (see §5), but it is no longer "the public
-  promise of how long you can work offline with unsynced data at risk" — it is just an ordinary
-  session length: how long before the user must log in again. The stakes are materially lower
-  than in ADR-0003.
+- **Refresh-token TTL: confirmed 60 days, sliding** (§4). It is no longer "the public promise of
+  how long you can work offline with unsynced data at risk" — it is just an ordinary session
+  length: how long before the user must log in again. The stakes are materially lower than in
+  ADR-0003.
 - **Session eviction (soft-limit 10)** no longer needs the push-first handling ADR-0003 §2.9
   required — an evicted session just means "log in again," identical to any other token expiry,
   because there is no unsynced local data at risk of being orphaned.
@@ -153,10 +153,10 @@ disposable and derived, never authoritative.
 
 ## 4. Open items requiring manager confirmation
 
-Carried over from ADR-0003, still unanswered:
+**Confirmed 2026-08-02:**
 
-1. **Refresh-token / session TTL.** Now just "how long before the user must log in again" —
-   materially lower-stakes than ADR-0003's "offline window" framing, but still a number to pick.
+1. ~~**Refresh-token / session TTL.**~~ **60 days, sliding.** Now just "how long before the user
+   must log in again" — materially lower-stakes than ADR-0003's "offline window" framing.
 
 No longer forced by this ADR (now a free, independent choice if it ever comes up):
 

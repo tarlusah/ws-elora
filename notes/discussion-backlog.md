@@ -60,7 +60,7 @@ across the board.
 
 | # | Topic | What it decides | Weight | Status |
 |---|---|---|---|---|
-| 2.1 | **Refresh-token / session TTL** | *Reframed by ADR-0004 §2.4: just "how long before you must log in again," not an offline-window promise.* Still a number the manager needs to pick. Proposed 60 days sliding, carried over as the default. | 🟢 | ☐ |
+| 2.1 | ~~**Refresh-token / session TTL**~~ | **☑ Settled 2026-08-02 — 60 days, sliding.** *Reframed by ADR-0004 §2.4: just "how long before you must log in again," not an offline-window promise.* Manager confirmed the carried-over default. | 🟢 | ☑ |
 | 2.2 | ~~**Rotation + grace window**~~ | Was: session table shape to prevent lockout when the network drops mid-rotation while the device holds unsynced writes. **Downgraded by ADR-0004 §2.4 to an ordinary UX nicety** (avoid a spurious logout on a network blip) — no longer a correctness requirement, since there's no unsynced data at risk. Worth doing, but not urgent. | 🟢 | ☐ |
 | 2.3 | ~~**Session soft-limit (max 10) vs long-offline device**~~ | Was: an evicted session must land in the push-first path, never the clean-install path. **Superseded by ADR-0004 §2.4 — eviction is just "log in again," identical to any other token expiry; there's no unsynced local data to protect.** | 🟡 | 🚫 |
 | 2.4 | ~~**Three login cases**~~ | Was: clean install / same user with local data / different user, and how much the server needs to know. **Superseded by ADR-0004 §2.3 — login collapses to one case: authenticate, fetch from server, populate cache.** | 🔴 | 🚫 |
